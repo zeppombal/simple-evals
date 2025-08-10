@@ -7,11 +7,10 @@ https://arxiv.org/abs/2311.12022
 import random
 import re
 
+import common
 import pandas
-
-from . import common
-from .common import ANSWER_PATTERN_MULTICHOICE, HTML_JINJA, format_multichoice_question
-from .types import Eval, EvalResult, MessageList, SamplerBase, SingleEvalResult
+from common import ANSWER_PATTERN_MULTICHOICE, HTML_JINJA, format_multichoice_question
+from typess import Eval, EvalResult, MessageList, SamplerBase, SingleEvalResult
 
 
 class GPQAEval(Eval):
@@ -19,7 +18,9 @@ class GPQAEval(Eval):
         self,
         n_repeats: int = 4,
         variant: str = "diamond",
-        num_examples: int | None = None,  # restrict to a subset of the data for debugging
+        num_examples: (
+            int | None
+        ) = None,  # restrict to a subset of the data for debugging
     ):
         df = pandas.read_csv(
             f"https://openaipublic.blob.core.windows.net/simple-evals/gpqa_{variant}.csv"
@@ -30,7 +31,9 @@ class GPQAEval(Eval):
             assert n_repeats == 1, "n_repeats only supported for num_examples = None"
             examples = rng.sample(examples, num_examples)
         examples = examples * n_repeats
-        examples = [example | {"permutation": rng.sample(range(4), 4)} for example in examples]
+        examples = [
+            example | {"permutation": rng.sample(range(4), 4)} for example in examples
+        ]
         self.examples = examples
         self.n_repeats = n_repeats
 
@@ -46,7 +49,11 @@ class GPQAEval(Eval):
             correct_index = choices.index(row["Correct Answer"])
             correct_answer = "ABCD"[correct_index]
             choices_dict = dict(
-                A=choices[0], B=choices[1], C=choices[2], D=choices[3], Question=row["Question"]
+                A=choices[0],
+                B=choices[1],
+                C=choices[2],
+                D=choices[3],
+                Question=row["Question"],
             )
             prompt_messages = [
                 sampler._pack_message(
@@ -55,7 +62,9 @@ class GPQAEval(Eval):
             ]
             sampler_response = sampler(prompt_messages)
             response_text = sampler_response.response_text
-            actual_queried_prompt_messages = sampler_response.actual_queried_message_list
+            actual_queried_prompt_messages = (
+                sampler_response.actual_queried_message_list
+            )
             match = re.search(ANSWER_PATTERN_MULTICHOICE, response_text)
             extracted_answer = match.group(1) if match else None
             score = 1.0 if extracted_answer == correct_answer else 0.0
@@ -66,9 +75,14 @@ class GPQAEval(Eval):
                 correct_answer=correct_answer,
                 extracted_answer=extracted_answer,
             )
-            convo = actual_queried_prompt_messages + [dict(content=response_text, role="assistant")]
+            convo = actual_queried_prompt_messages + [
+                dict(content=response_text, role="assistant")
+            ]
             return SingleEvalResult(
-                html=html, score=score, convo=convo, metrics={"chars": len(response_text)}
+                html=html,
+                score=score,
+                convo=convo,
+                metrics={"chars": len(response_text)},
             )
 
         results = common.map_with_progress(fn, self.examples)

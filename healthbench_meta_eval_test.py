@@ -1,4 +1,4 @@
-from . import healthbench_meta_eval
+import healthbench_meta_eval
 
 
 def test_compute_agreement_for_rater_by_class():
@@ -86,11 +86,13 @@ def test_compute_agreement_for_rater_by_class():
     cluster_a_neg_precision = metrics[cluster_a_str_neg_precision]
     assert cluster_a_pos_precision["value"] == (
         # example 1, 2 in order
-        (2 + 0) / (3 + 0)
+        (2 + 0)
+        / (3 + 0)
     )
     assert cluster_a_neg_precision["value"] == (
         # example 1, 2 in order
-        (0 + 1) / (0 + 2)
+        (0 + 1)
+        / (0 + 2)
     )
     assert cluster_a_pos_precision["n"] == 3
     assert cluster_a_neg_precision["n"] == 2
@@ -106,11 +108,13 @@ def test_compute_agreement_for_rater_by_class():
     cluster_a_neg_recall = metrics[cluster_a_str_neg_recall]
     assert cluster_a_pos_recall["value"] == (
         # example 1, 2 in order
-        (2 + 0) / (2 + 1)
+        (2 + 0)
+        / (2 + 1)
     )
     assert cluster_a_neg_recall["value"] == (
         # example 1, 2 in order
-        (0 + 1) / (1 + 1)
+        (0 + 1)
+        / (1 + 1)
     )
     assert cluster_a_pos_recall["n"] == 3
     assert cluster_a_neg_recall["n"] == 2
@@ -127,7 +131,8 @@ def test_compute_agreement_for_rater_by_class():
     assert cluster_b_str_neg_precision not in metrics
     assert cluster_b_str_pos_precision["value"] == (
         # example 3 only
-        0 / 1
+        0
+        / 1
     )
     assert cluster_b_str_pos_precision["n"] == 1
 
@@ -142,7 +147,8 @@ def test_compute_agreement_for_rater_by_class():
     cluster_b_neg_recall = metrics[cluster_b_str_neg_recall]
     assert cluster_b_neg_recall["value"] == (
         # example 3 only
-        0 / 1
+        0
+        / 1
     )
     assert cluster_b_neg_recall["n"] == 1
 

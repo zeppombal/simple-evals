@@ -1,4 +1,4 @@
-from .healthbench_eval import RubricItem, calculate_score
+from healthbench_eval import RubricItem, calculate_score
 
 
 def test_calculate_score():

@@ -7,10 +7,9 @@ https://arxiv.org/abs/2009.03300
 import random
 import re
 
+import common
 import pandas
-
-from . import common
-from .common import (
+from common import (
     HTML_JINJA,
     MULTILINGUAL_ANSWER_PATTERN_TEMPLATE,
     MULTILINGUAL_ANSWER_REGEXES,
@@ -18,7 +17,7 @@ from .common import (
     normalize_extracted_answer,
     normalize_response,
 )
-from .types import Eval, EvalResult, SamplerBase, SingleEvalResult
+from typess import Eval, EvalResult, SamplerBase, SingleEvalResult
 
 subject2category = {
     "abstract_algebra": "stem",
@@ -102,7 +101,9 @@ class MMLUEval(Eval):
             ]
             sampler_response = sampler(prompt_messages)
             response_text = sampler_response.response_text
-            actual_queried_prompt_messages = sampler_response.actual_queried_message_list
+            actual_queried_prompt_messages = (
+                sampler_response.actual_queried_message_list
+            )
             response_text = normalize_response(response_text)
             extracted_answer = None
             for answer_regex in MULTILINGUAL_ANSWER_REGEXES:
@@ -119,7 +120,9 @@ class MMLUEval(Eval):
                 correct_answer=row["Answer"],
                 extracted_answer=extracted_answer,
             )
-            convo = actual_queried_prompt_messages + [dict(content=response_text, role="assistant")]
+            convo = actual_queried_prompt_messages + [
+                dict(content=response_text, role="assistant")
+            ]
             category = subject2category.get(row["Subject"], "other")
             return SingleEvalResult(
                 html=html, score=score, metrics={category: score}, convo=convo

@@ -4,8 +4,7 @@ from typing import Any
 
 import openai
 from openai import OpenAI
-
-from ..types import MessageList, SamplerBase, SamplerResponse
+from typess import MessageList, SamplerBase, SamplerResponse
 
 
 class ResponsesSampler(SamplerBase):

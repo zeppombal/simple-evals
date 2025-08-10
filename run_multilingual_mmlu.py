@@ -1,14 +1,14 @@
 import json
 
+import common
 import pandas as pd
-
-from . import common
-from .mmlu_eval import MMLUEval
-from .sampler.chat_completion_sampler import (
+from mmlu_eval import MMLUEval
+from sampler.chat_completion_sampler import (
     OPENAI_SYSTEM_MESSAGE_API,
     OPENAI_SYSTEM_MESSAGE_CHATGPT,
     ChatCompletionSampler,
 )
+
 from .sampler.o_chat_completion_sampler import OChatCompletionSampler
 
 

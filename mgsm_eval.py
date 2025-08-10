@@ -1,16 +1,16 @@
 """
-MGSM: Multilingual Grade School Math Benchmark (MGSM) is a benchmark of grade-school math problems. 
+MGSM: Multilingual Grade School Math Benchmark (MGSM) is a benchmark of grade-school math problems.
 Language Models are Multilingual Chain-of-Thought Reasoners
 Freda Shi, Mirac Suzgun, Markus Freitag, Xuezhi Wang, Suraj Srivats, Soroush Vosoughi, Hyung Won Chung, Yi Tay, Sebastian Ruder, Denny Zhou, Dipanjan Das, Jason Wei
-https://arxiv.org/abs/2210.03057 reference: https://github.com/google-research/url-nlp 
+https://arxiv.org/abs/2210.03057 reference: https://github.com/google-research/url-nlp
 """
 
 import re
 from typing import Optional
 
-from . import common
-from .mmlu_eval import HTML_JINJA
-from .types import Eval, EvalResult, SamplerBase, SingleEvalResult
+import common
+from mmlu_eval import HTML_JINJA
+from typess import Eval, EvalResult, SamplerBase, SingleEvalResult
 
 ALL_LANGUAGES = ["bn", "de", "en", "es", "fr", "ja", "ru", "sw", "te", "th", "zh"]
 LATIN_LANGUAGES = ["de", "en", "es", "fr", "sw"]
@@ -154,7 +154,9 @@ class MGSMEval(Eval):
     def __call__(self, sampler: SamplerBase) -> EvalResult:
         def fn(example: dict[str, str]):
             language = example["lang"]
-            latin_language = "group_latin" if language in LATIN_LANGUAGES else "group_non_latin"
+            latin_language = (
+                "group_latin" if language in LATIN_LANGUAGES else "group_non_latin"
+            )
             correct_answer = example["targets"]
             instruction = LANG_TO_INSTRUCTIONS[language]
             prompt_messages = [
@@ -165,7 +167,9 @@ class MGSMEval(Eval):
             try:
                 sampler_response = sampler(prompt_messages)
                 response_text = sampler_response.response_text
-                actual_queried_prompt_messages = sampler_response.actual_queried_message_list
+                actual_queried_prompt_messages = (
+                    sampler_response.actual_queried_message_list
+                )
             except Exception as e:
                 response_text = ""
 
@@ -180,7 +184,9 @@ class MGSMEval(Eval):
                 correct_answer=correct_answer,
                 extracted_answer=extracted_answer or None,
             )
-            convo = actual_queried_prompt_messages + [dict(content=response_text, role="assistant")]
+            convo = actual_queried_prompt_messages + [
+                dict(content=response_text, role="assistant")
+            ]
             return SingleEvalResult(
                 html=html,
                 score=score,

@@ -3,27 +3,25 @@ import json
 import subprocess
 from datetime import datetime
 
+import common
 import pandas as pd
-
-from . import common
-from .browsecomp_eval import BrowseCompEval
-from .drop_eval import DropEval
-from .gpqa_eval import GPQAEval
-from .healthbench_eval import HealthBenchEval
-from .healthbench_meta_eval import HealthBenchMetaEval
-from .math_eval import MathEval
-from .mgsm_eval import MGSMEval
-from .mmlu_eval import MMLUEval
-from .humaneval_eval import HumanEval
-from .sampler.chat_completion_sampler import (
+from browsecomp_eval import BrowseCompEval
+from drop_eval import DropEval
+from gpqa_eval import GPQAEval
+from healthbench_eval import HealthBenchEval
+from healthbench_meta_eval import HealthBenchMetaEval
+from math_eval import MathEval
+from mgsm_eval import MGSMEval
+from mmlu_eval import MMLUEval
+from sampler.chat_completion_sampler import (
     OPENAI_SYSTEM_MESSAGE_API,
     OPENAI_SYSTEM_MESSAGE_CHATGPT,
     ChatCompletionSampler,
 )
-from .sampler.claude_sampler import ClaudeCompletionSampler, CLAUDE_SYSTEM_MESSAGE_LMSYS
-from .sampler.o_chat_completion_sampler import OChatCompletionSampler
-from .sampler.responses_sampler import ResponsesSampler
-from .simpleqa_eval import SimpleQAEval
+from sampler.claude_sampler import CLAUDE_SYSTEM_MESSAGE_LMSYS, ClaudeCompletionSampler
+from sampler.o_chat_completion_sampler import OChatCompletionSampler
+from sampler.responses_sampler import ResponsesSampler
+from simpleqa_eval import SimpleQAEval
 
 
 def main():
@@ -37,6 +35,12 @@ def main():
         "--model",
         type=str,
         help="Select a model by name. Also accepts a comma-separated list of models.",
+    )
+    parser.add_argument(
+        "--grader-model",
+        type=str,
+        help="Select a grader model by name.",
+        default=None,
     )
     parser.add_argument(
         "--eval",
@@ -59,181 +63,226 @@ def main():
     parser.add_argument(
         "--examples", type=int, help="Number of examples to use (overrides default)"
     )
+    parser.add_argument(
+        "--temperature", type=float, help="Temperature for decoding.", default=0.5
+    )
+    parser.add_argument(
+        "--base-url",
+        type=str,
+        help="Base url for custom models.",
+        default="http://localhost:8000/v1",
+    )
+    parser.add_argument(
+        "--base-url-grader",
+        type=str,
+        help="Base url for custom grader.",
+        default="http://localhost:8080/v1",
+    )
 
     args = parser.parse_args()
-
-    models = {
-        # Reasoning Models
-        "o3": ResponsesSampler(
-            model="o3-2025-04-16",
-            reasoning_model=True,
-        ),
-        "o3-temp-1": ResponsesSampler(
-            model="o3-2025-04-16",
-            reasoning_model=True,
-            temperature=1.0,
-        ),
-        "o3_high": ResponsesSampler(
-            model="o3-2025-04-16",
-            reasoning_model=True,
-            reasoning_effort="high",
-        ),
-        "o3_low": ResponsesSampler(
-            model="o3-2025-04-16",
-            reasoning_model=True,
-            reasoning_effort="low",
-        ),
-        # Default == Medium
-        "o4-mini": ResponsesSampler(
-            model="o4-mini-2025-04-16",
-            reasoning_model=True,
-        ),
-        "o4-mini_high": ResponsesSampler(
-            model="o4-mini-2025-04-16",
-            reasoning_model=True,
-            reasoning_effort="high",
-        ),
-        "o4-mini_low": ResponsesSampler(
-            model="o4-mini-2025-04-16",
-            reasoning_model=True,
-            reasoning_effort="low",
-        ),
-        "o1-pro": ResponsesSampler(
-            model="o1-pro",
-            reasoning_model=True,
-        ),
-        "o1": OChatCompletionSampler(
-            model="o1",
-        ),
-        "o1_high": OChatCompletionSampler(
-            model="o1",
-            reasoning_effort="high",
-        ),
-        "o1_low": OChatCompletionSampler(
-            model="o1",
-            reasoning_effort="low",
-        ),
-        "o1-preview": OChatCompletionSampler(
-            model="o1-preview",
-        ),
-        "o1-mini": OChatCompletionSampler(
-            model="o1-mini",
-        ),
-        # Default == Medium
-        "o3-mini": OChatCompletionSampler(
-            model="o3-mini",
-        ),
-        "o3-mini_high": OChatCompletionSampler(
-            model="o3-mini",
-            reasoning_effort="high",
-        ),
-        "o3-mini_low": OChatCompletionSampler(
-            model="o3-mini",
-            reasoning_effort="low",
-        ),
-        # GPT-4.1 models
-        "gpt-4.1": ChatCompletionSampler(
-            model="gpt-4.1-2025-04-14",
-            system_message=OPENAI_SYSTEM_MESSAGE_API,
-            max_tokens=2048,
-        ),
-        "gpt-4.1-temp-1": ChatCompletionSampler(
-            model="gpt-4.1-2025-04-14",
-            system_message=OPENAI_SYSTEM_MESSAGE_API,
-            max_tokens=2048,
-            temperature=1.0,
-        ),
-        "gpt-4.1-mini": ChatCompletionSampler(
-            model="gpt-4.1-mini-2025-04-14",
-            system_message=OPENAI_SYSTEM_MESSAGE_API,
-            max_tokens=2048,
-        ),
-        "gpt-4.1-nano": ChatCompletionSampler(
-            model="gpt-4.1-nano-2025-04-14",
-            system_message=OPENAI_SYSTEM_MESSAGE_API,
-            max_tokens=2048,
-        ),
-        # GPT-4o models
-        "gpt-4o": ChatCompletionSampler(
-            model="gpt-4o",
-            system_message=OPENAI_SYSTEM_MESSAGE_API,
-            max_tokens=2048,
-        ),
-        "gpt-4o-2024-11-20": ChatCompletionSampler(
-            model="gpt-4o-2024-11-20",
-            system_message=OPENAI_SYSTEM_MESSAGE_API,
-            max_tokens=2048,
-        ),
-        "gpt-4o-2024-08-06": ChatCompletionSampler(
-            model="gpt-4o-2024-08-06",
-            system_message=OPENAI_SYSTEM_MESSAGE_API,
-            max_tokens=2048,
-        ),
-        "gpt-4o-2024-08-06-temp-1": ChatCompletionSampler(
-            model="gpt-4o-2024-08-06",
-            system_message=OPENAI_SYSTEM_MESSAGE_API,
-            max_tokens=2048,
-            temperature=1.0,
-        ),
-        "gpt-4o-2024-05-13": ChatCompletionSampler(
-            model="gpt-4o-2024-05-13",
-            system_message=OPENAI_SYSTEM_MESSAGE_API,
-            max_tokens=2048,
-        ),
-        "gpt-4o-mini": ChatCompletionSampler(
-            model="gpt-4o-mini-2024-07-18",
-            system_message=OPENAI_SYSTEM_MESSAGE_API,
-            max_tokens=2048,
-        ),
-        # GPT-4.5 model
-        "gpt-4.5-preview": ChatCompletionSampler(
-            model="gpt-4.5-preview-2025-02-27",
-            system_message=OPENAI_SYSTEM_MESSAGE_API,
-            max_tokens=2048,
-        ),
-        # GPT-4-turbo model
-        "gpt-4-turbo-2024-04-09": ChatCompletionSampler(
-            model="gpt-4-turbo-2024-04-09",
-            system_message=OPENAI_SYSTEM_MESSAGE_API,
-        ),
-        # GPT-4 model
-        "gpt-4-0613": ChatCompletionSampler(
-            model="gpt-4-0613",
-            system_message=OPENAI_SYSTEM_MESSAGE_API,
-        ),
-        # GPT-3.5 Turbo model
-        "gpt-3.5-turbo-0125": ChatCompletionSampler(
-            model="gpt-3.5-turbo-0125",
-            system_message=OPENAI_SYSTEM_MESSAGE_API,
-        ),
-        "gpt-3.5-turbo-0125-temp-1": ChatCompletionSampler(
-            model="gpt-3.5-turbo-0125",
-            system_message=OPENAI_SYSTEM_MESSAGE_API,
-            temperature=1.0,
-        ),
-        # Chatgpt models:
-        "chatgpt-4o-latest": ChatCompletionSampler(
-            model="chatgpt-4o-latest",
-            system_message=OPENAI_SYSTEM_MESSAGE_CHATGPT,
-            max_tokens=2048,
-        ),
-        "gpt-4-turbo-2024-04-09_chatgpt": ChatCompletionSampler(
-            model="gpt-4-turbo-2024-04-09",
-            system_message=OPENAI_SYSTEM_MESSAGE_CHATGPT,
-        ),
-        # Claude models:
-        "claude-3-opus-20240229_empty": ClaudeCompletionSampler(
-            model="claude-3-opus-20240229",
-            system_message=CLAUDE_SYSTEM_MESSAGE_LMSYS,
-        ),
-        "claude-3-7-sonnet-20250219": ClaudeCompletionSampler(
-            model="claude-3-7-sonnet-20250219",
-            system_message=CLAUDE_SYSTEM_MESSAGE_LMSYS,
-        ),
-        "claude-3-haiku-20240307": ClaudeCompletionSampler(
-            model="claude-3-haiku-20240307",
-        ),
-    }
+    if "/" in args.model:
+        models = {
+            args.model: ChatCompletionSampler(
+                model=args.model,
+                temperature=args.temperature,
+                max_tokens=2048,
+                base_url=args.base_url,
+            )
+        }
+    else:
+        models = {
+            # Reasoning Models
+            "o3": ResponsesSampler(
+                model="o3-2025-04-16",
+                reasoning_model=True,
+                temperature=args.temperature,
+            ),
+            "o3-temp-1": ResponsesSampler(
+                model="o3-2025-04-16",
+                reasoning_model=True,
+                temperature=1.0,
+            ),
+            "o3_high": ResponsesSampler(
+                model="o3-2025-04-16",
+                reasoning_model=True,
+                reasoning_effort="high",
+                temperature=args.temperature,
+            ),
+            "o3_low": ResponsesSampler(
+                model="o3-2025-04-16",
+                reasoning_model=True,
+                reasoning_effort="low",
+                temperature=args.temperature,
+            ),
+            # Default == Medium
+            "o4-mini": ResponsesSampler(
+                model="o4-mini-2025-04-16",
+                reasoning_model=True,
+                temperature=args.temperature,
+            ),
+            "o4-mini_high": ResponsesSampler(
+                model="o4-mini-2025-04-16",
+                reasoning_model=True,
+                reasoning_effort="high",
+                temperature=args.temperature,
+            ),
+            "o4-mini_low": ResponsesSampler(
+                model="o4-mini-2025-04-16",
+                reasoning_model=True,
+                reasoning_effort="low",
+                temperature=args.temperature,
+            ),
+            "o1-pro": ResponsesSampler(
+                model="o1-pro", reasoning_model=True, temperature=args.temperature
+            ),
+            "o1": OChatCompletionSampler(
+                model="o1",
+            ),
+            "o1_high": OChatCompletionSampler(
+                model="o1",
+                reasoning_effort="high",
+            ),
+            "o1_low": OChatCompletionSampler(
+                model="o1",
+                reasoning_effort="low",
+            ),
+            "o1-preview": OChatCompletionSampler(
+                model="o1-preview",
+            ),
+            "o1-mini": OChatCompletionSampler(
+                model="o1-mini",
+            ),
+            # Default == Medium
+            "o3-mini": OChatCompletionSampler(
+                model="o3-mini",
+            ),
+            "o3-mini_high": OChatCompletionSampler(
+                model="o3-mini",
+                reasoning_effort="high",
+            ),
+            "o3-mini_low": OChatCompletionSampler(
+                model="o3-mini",
+                reasoning_effort="low",
+            ),
+            # GPT-4.1 models
+            "gpt-4.1": ChatCompletionSampler(
+                model="gpt-4.1-2025-04-14",
+                system_message=OPENAI_SYSTEM_MESSAGE_API,
+                max_tokens=2048,
+                temperature=args.temperature,
+            ),
+            "gpt-4.1-temp-1": ChatCompletionSampler(
+                model="gpt-4.1-2025-04-14",
+                system_message=OPENAI_SYSTEM_MESSAGE_API,
+                max_tokens=2048,
+                temperature=1.0,
+            ),
+            "gpt-4.1-mini": ChatCompletionSampler(
+                model="gpt-4.1-mini-2025-04-14",
+                system_message=OPENAI_SYSTEM_MESSAGE_API,
+                max_tokens=2048,
+                temperature=args.temperature,
+            ),
+            "gpt-4.1-nano": ChatCompletionSampler(
+                model="gpt-4.1-nano-2025-04-14",
+                system_message=OPENAI_SYSTEM_MESSAGE_API,
+                max_tokens=2048,
+                temperature=args.temperature,
+            ),
+            # GPT-4o models
+            "gpt-4o": ChatCompletionSampler(
+                model="gpt-4o",
+                system_message=OPENAI_SYSTEM_MESSAGE_API,
+                max_tokens=2048,
+                temperature=args.temperature,
+            ),
+            "gpt-4o-2024-11-20": ChatCompletionSampler(
+                model="gpt-4o-2024-11-20",
+                system_message=OPENAI_SYSTEM_MESSAGE_API,
+                max_tokens=2048,
+                temperature=args.temperature,
+            ),
+            "gpt-4o-2024-08-06": ChatCompletionSampler(
+                model="gpt-4o-2024-08-06",
+                system_message=OPENAI_SYSTEM_MESSAGE_API,
+                max_tokens=2048,
+                temperature=args.temperature,
+            ),
+            "gpt-4o-2024-08-06-temp-1": ChatCompletionSampler(
+                model="gpt-4o-2024-08-06",
+                system_message=OPENAI_SYSTEM_MESSAGE_API,
+                max_tokens=2048,
+                temperature=1.0,
+            ),
+            "gpt-4o-2024-05-13": ChatCompletionSampler(
+                model="gpt-4o-2024-05-13",
+                system_message=OPENAI_SYSTEM_MESSAGE_API,
+                max_tokens=2048,
+                temperature=args.temperature,
+            ),
+            "gpt-4o-mini": ChatCompletionSampler(
+                model="gpt-4o-mini-2024-07-18",
+                system_message=OPENAI_SYSTEM_MESSAGE_API,
+                max_tokens=2048,
+                temperature=args.temperature,
+            ),
+            # GPT-4.5 model
+            "gpt-4.5-preview": ChatCompletionSampler(
+                model="gpt-4.5-preview-2025-02-27",
+                system_message=OPENAI_SYSTEM_MESSAGE_API,
+                max_tokens=2048,
+                temperature=args.temperature,
+            ),
+            # GPT-4-turbo model
+            "gpt-4-turbo-2024-04-09": ChatCompletionSampler(
+                model="gpt-4-turbo-2024-04-09",
+                system_message=OPENAI_SYSTEM_MESSAGE_API,
+                temperature=args.temperature,
+            ),
+            # GPT-4 model
+            "gpt-4-0613": ChatCompletionSampler(
+                model="gpt-4-0613",
+                system_message=OPENAI_SYSTEM_MESSAGE_API,
+                temperature=args.temperature,
+            ),
+            # GPT-3.5 Turbo model
+            "gpt-3.5-turbo-0125": ChatCompletionSampler(
+                model="gpt-3.5-turbo-0125",
+                system_message=OPENAI_SYSTEM_MESSAGE_API,
+                temperature=args.temperature,
+            ),
+            "gpt-3.5-turbo-0125-temp-1": ChatCompletionSampler(
+                model="gpt-3.5-turbo-0125",
+                system_message=OPENAI_SYSTEM_MESSAGE_API,
+                temperature=1.0,
+            ),
+            # Chatgpt models:
+            "chatgpt-4o-latest": ChatCompletionSampler(
+                model="chatgpt-4o-latest",
+                system_message=OPENAI_SYSTEM_MESSAGE_CHATGPT,
+                max_tokens=2048,
+                temperature=args.temperature,
+            ),
+            "gpt-4-turbo-2024-04-09_chatgpt": ChatCompletionSampler(
+                model="gpt-4-turbo-2024-04-09",
+                system_message=OPENAI_SYSTEM_MESSAGE_CHATGPT,
+                temperature=args.temperature,
+            ),
+            # Claude models:
+            "claude-3-opus-20240229_empty": ClaudeCompletionSampler(
+                model="claude-3-opus-20240229",
+                system_message=CLAUDE_SYSTEM_MESSAGE_LMSYS,
+                temperature=args.temperature,
+            ),
+            "claude-3-7-sonnet-20250219": ClaudeCompletionSampler(
+                model="claude-3-7-sonnet-20250219",
+                system_message=CLAUDE_SYSTEM_MESSAGE_LMSYS,
+                temperature=args.temperature,
+            ),
+            "claude-3-haiku-20240307": ClaudeCompletionSampler(
+                model="claude-3-haiku-20240307", temperature=args.temperature
+            ),
+        }
 
     if args.list_models:
         print("Available models:")
@@ -251,11 +300,19 @@ def main():
 
     print(f"Running with args {args}")
 
-    grading_sampler = ChatCompletionSampler(
-        model="gpt-4.1-2025-04-14",
-        system_message=OPENAI_SYSTEM_MESSAGE_API,
-        max_tokens=2048,
-    )
+    if args.grader_model is None:
+        grading_sampler = ChatCompletionSampler(
+            model="gpt-4.1-2025-04-14",
+            system_message=OPENAI_SYSTEM_MESSAGE_API,
+            max_tokens=2048,
+        )
+    else:
+        grading_sampler = ChatCompletionSampler(
+            model=args.grader_model,
+            max_tokens=2048,
+            base_url=args.base_url_grader,
+            temperature=0.1,  # temperature != 0.0 in the event grading fails and we have to retry.
+        )
     equality_checker = ChatCompletionSampler(model="gpt-4-turbo-preview")
     # ^^^ used for fuzzy matching, just for math
 
@@ -374,10 +431,10 @@ def main():
         for eval_name, eval_obj in evals.items():
             result = eval_obj(sampler)
             # ^^^ how to use a sampler
-            file_stem = f"{eval_name}_{model_name}"
+            file_stem = f"{eval_name}_{model_name.replace('/', '__')}"
             # file stem should also include the year, month, day, and time in hours and minutes
             file_stem += f"_{date_str}"
-            report_filename = f"/tmp/{file_stem}{debug_suffix}.html"
+            report_filename = f"{file_stem}{debug_suffix}.html"
             print(f"Writing report to {report_filename}")
             with open(report_filename, "w") as fh:
                 fh.write(common.make_report(result))
@@ -386,12 +443,12 @@ def main():
             # Sort metrics by key
             metrics = dict(sorted(metrics.items()))
             print(metrics)
-            result_filename = f"/tmp/{file_stem}{debug_suffix}.json"
+            result_filename = f"{file_stem}{debug_suffix}.json"
             with open(result_filename, "w") as f:
                 f.write(json.dumps(metrics, indent=2))
             print(f"Writing results to {result_filename}")
 
-            full_result_filename = f"/tmp/{file_stem}{debug_suffix}_allresults.json"
+            full_result_filename = f"{file_stem}{debug_suffix}_allresults.json"
             with open(full_result_filename, "w") as f:
                 result_dict = {
                     "score": result.score,

@@ -1,14 +1,15 @@
 """
-SimpleQA: Measuring short-form factuality in large language models 
+SimpleQA: Measuring short-form factuality in large language models
 Authors: Jason Wei, Nguyen Karina, Hyung Won Chung, Yunxin Joy Jiao, Spencer Papay, Amelia Glaese, John Schulman, William Fedus
 https://cdn.openai.com/papers/simpleqa.pdf
-""" 
+"""
 
-import random 
+import random
 import re
+
+import common
 import pandas
-from . import common
-from .types import Eval, EvalResult, SamplerBase, SingleEvalResult
+from typess import Eval, EvalResult, SamplerBase, SingleEvalResult
 
 GRADER_TEMPLATE = """
 Your job is to look at a question, a gold target, and a predicted answer, and then assign a grade of either ["CORRECT", "INCORRECT", "NOT_ATTEMPTED"].
@@ -96,8 +97,14 @@ CHOICE_LETTERS = ["A", "B", "C"]
 CHOICE_STRINGS = ["CORRECT", "INCORRECT", "NOT_ATTEMPTED"]
 CHOICE_LETTER_TO_STRING = dict(zip(CHOICE_LETTERS, CHOICE_STRINGS))
 
+
 class SimpleQAEval(Eval):
-    def __init__(self, grader_model: SamplerBase, num_examples: int | None = None, n_repeats: int = 1):
+    def __init__(
+        self,
+        grader_model: SamplerBase,
+        num_examples: int | None = None,
+        n_repeats: int = 1,
+    ):
         df = pandas.read_csv(
             "https://openaipublic.blob.core.windows.net/simple-evals/simple_qa_test_set.csv"
         )
@@ -115,82 +122,108 @@ class SimpleQAEval(Eval):
             target=target,
             predicted_answer=predicted_answer,
         )
-        
+
         prompt_messages = [
             self.grader_model._pack_message(content=grader_prompt, role="user")
         ]
-        sampler_response = self.grader_model(prompt_messages)   
+        sampler_response = self.grader_model(prompt_messages)
         grading_response = sampler_response.response_text
-        
+
         match = re.search(r"(A|B|C)", grading_response)
-        return match.group(0) if match else "C"  # Default to "NOT_ATTEMPTED" if no match
+        return (
+            match.group(0) if match else "C"
+        )  # Default to "NOT_ATTEMPTED" if no match
 
     def __call__(self, sampler: SamplerBase) -> EvalResult:
-            def fn(row: dict):
-                prompt_messages = [
-                    sampler._pack_message(content=row.get("problem", ""), role="user")
-                ]
-                sampler_response = sampler(prompt_messages)
-                response_text = sampler_response.response_text
-                actual_queried_prompt_messages = sampler_response.actual_queried_message_list
-                grade_letter = self.grade_sample(row.get("problem", ""), row.get("answer", ""), response_text)
-                
-                # Metrics based on grading response
-                is_correct = grade_letter == "A"
-                is_incorrect = grade_letter == "B"
-                is_not_attempted = grade_letter == "C"
-                
-                score = is_correct
+        def fn(row: dict):
+            prompt_messages = [
+                sampler._pack_message(content=row.get("problem", ""), role="user")
+            ]
+            sampler_response = sampler(prompt_messages)
+            response_text = sampler_response.response_text
+            actual_queried_prompt_messages = (
+                sampler_response.actual_queried_message_list
+            )
+            grade_letter = self.grade_sample(
+                row.get("problem", ""), row.get("answer", ""), response_text
+            )
 
-                # Create HTML for each sample result
-                html = common.jinja_env.from_string(common.HTML_JINJA).render(
-                    prompt_messages=actual_queried_prompt_messages,
-                    next_message=dict(content=response_text, role="assistant"),
-                    score=score,
-                    correct_answer=row["answer"],
-                    extracted_answer=response_text,
-                )
-                convo = actual_queried_prompt_messages + [dict(content=response_text, role="assistant")]
-                return SingleEvalResult(html=html, score=score, convo=convo, metrics={
+            # Metrics based on grading response
+            is_correct = grade_letter == "A"
+            is_incorrect = grade_letter == "B"
+            is_not_attempted = grade_letter == "C"
+
+            score = is_correct
+
+            # Create HTML for each sample result
+            html = common.jinja_env.from_string(common.HTML_JINJA).render(
+                prompt_messages=actual_queried_prompt_messages,
+                next_message=dict(content=response_text, role="assistant"),
+                score=score,
+                correct_answer=row["answer"],
+                extracted_answer=response_text,
+            )
+            convo = actual_queried_prompt_messages + [
+                dict(content=response_text, role="assistant")
+            ]
+            return SingleEvalResult(
+                html=html,
+                score=score,
+                convo=convo,
+                metrics={
                     "is_correct": is_correct,
                     "is_incorrect": is_incorrect,
-                    "is_not_attempted": is_not_attempted
-                })
-
-            # Run evaluation and collect results
-            results = common.map_with_progress(fn, self.examples)
-
-            # Aggregate metrics
-            aggregate_metrics = {
-                "is_correct": sum(result.metrics["is_correct"] for result in results) / len(results),
-                "is_incorrect": sum(result.metrics["is_incorrect"] for result in results) / len(results),
-                "is_not_attempted": sum(result.metrics["is_not_attempted"] for result in results) / len(results),
-            }
-            aggregate_metrics["is_given_attempted"] = aggregate_metrics["is_correct"] + aggregate_metrics["is_incorrect"]
-            # Calculate accuracy_given_attempted
-            aggregate_metrics["accuracy_given_attempted"] = (
-                aggregate_metrics["is_correct"]
-                / aggregate_metrics["is_given_attempted"]
-                if aggregate_metrics["is_given_attempted"] > 0
-                else 0
+                    "is_not_attempted": is_not_attempted,
+                },
             )
-            print("AGGREGATE METRICS") 
-            print(aggregate_metrics) 
-            print("##################")
 
-            output_d = {
-                "accuracy_given_attempted": aggregate_metrics["accuracy_given_attempted"],
-                "f1": (
-                    2 * aggregate_metrics["accuracy_given_attempted"] * aggregate_metrics["is_correct"]
-                    / (aggregate_metrics["accuracy_given_attempted"] + aggregate_metrics["is_correct"])
-                    if (aggregate_metrics["accuracy_given_attempted"] + aggregate_metrics["is_correct"]) > 0
-                    else 0
+        # Run evaluation and collect results
+        results = common.map_with_progress(fn, self.examples)
+
+        # Aggregate metrics
+        aggregate_metrics = {
+            "is_correct": sum(result.metrics["is_correct"] for result in results)
+            / len(results),
+            "is_incorrect": sum(result.metrics["is_incorrect"] for result in results)
+            / len(results),
+            "is_not_attempted": sum(
+                result.metrics["is_not_attempted"] for result in results
+            )
+            / len(results),
+        }
+        aggregate_metrics["is_given_attempted"] = (
+            aggregate_metrics["is_correct"] + aggregate_metrics["is_incorrect"]
+        )
+        # Calculate accuracy_given_attempted
+        aggregate_metrics["accuracy_given_attempted"] = (
+            aggregate_metrics["is_correct"] / aggregate_metrics["is_given_attempted"]
+            if aggregate_metrics["is_given_attempted"] > 0
+            else 0
+        )
+        print("AGGREGATE METRICS")
+        print(aggregate_metrics)
+        print("##################")
+
+        output_d = {
+            "accuracy_given_attempted": aggregate_metrics["accuracy_given_attempted"],
+            "f1": (
+                2
+                * aggregate_metrics["accuracy_given_attempted"]
+                * aggregate_metrics["is_correct"]
+                / (
+                    aggregate_metrics["accuracy_given_attempted"]
+                    + aggregate_metrics["is_correct"]
                 )
-            }
-            
-            print(f"Accuracy Given Attempted: {output_d['accuracy_given_attempted']:.3f}")
-            print(f"F1 Score: {output_d['f1']:.3f}")
-            
-            return common.aggregate_results(results)
-    
+                if (
+                    aggregate_metrics["accuracy_given_attempted"]
+                    + aggregate_metrics["is_correct"]
+                )
+                > 0
+                else 0
+            ),
+        }
 
+        print(f"Accuracy Given Attempted: {output_d['accuracy_given_attempted']:.3f}")
+        print(f"F1 Score: {output_d['f1']:.3f}")
+
+        return common.aggregate_results(results)

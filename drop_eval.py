@@ -11,12 +11,11 @@ import re
 import string
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
+import common
 import numpy as np
+from common import ANSWER_PATTERN, HTML_JINJA
 from scipy.optimize import linear_sum_assignment
-
-from . import common
-from .common import ANSWER_PATTERN, HTML_JINJA
-from .types import Eval, EvalResult, SamplerBase, SingleEvalResult
+from typess import Eval, EvalResult, SamplerBase, SingleEvalResult
 
 """
 From here through _normalize_answer was originally copied from:
@@ -59,7 +58,9 @@ def _normalize_answer(text: str) -> str:
     """Lower text and remove punctuation, articles and extra whitespace."""
 
     parts = [
-        _white_space_fix(_remove_articles(_normalize_number(_remove_punc(_lower(token)))))
+        _white_space_fix(
+            _remove_articles(_normalize_number(_remove_punc(_lower(token))))
+        )
         for token in _tokenize(text)
     ]
     parts = [part for part in parts if part.strip()]
@@ -83,7 +84,7 @@ def _normalize_number(text: str) -> str:
 
 
 def _answer_to_bags(
-    answer: Union[str, List[str], Tuple[str, ...]]
+    answer: Union[str, List[str], Tuple[str, ...]],
 ) -> Tuple[List[str], List[Set[str]]]:
     if isinstance(answer, (list, tuple)):
         raw_spans = answer
@@ -149,7 +150,8 @@ def _match_numbers_if_present(gold_bag: Set[str], predicted_bag: Set[str]) -> bo
 
 
 def get_drop_metrics(
-    predicted: Union[str, List[str], Tuple[str, ...]], gold: Union[str, List[str], Tuple[str, ...]]
+    predicted: Union[str, List[str], Tuple[str, ...]],
+    gold: Union[str, List[str], Tuple[str, ...]],
 ) -> Tuple[float, float]:
     """
     Takes a predicted answer and a gold answer (that are both either a string or a list of
@@ -161,7 +163,9 @@ def get_drop_metrics(
     predicted_bags = _answer_to_bags(predicted)
     gold_bags = _answer_to_bags(gold)
 
-    if set(predicted_bags[0]) == set(gold_bags[0]) and len(predicted_bags[0]) == len(gold_bags[0]):
+    if set(predicted_bags[0]) == set(gold_bags[0]) and len(predicted_bags[0]) == len(
+        gold_bags[0]
+    ):
         exact_match = 1.0
     else:
         exact_match = 0.0
@@ -186,7 +190,9 @@ def answer_json_to_strings(answer: Dict[str, Any]) -> Tuple[Tuple[str, ...], str
             tuple(
                 [
                     "{0} {1} {2}".format(
-                        answer["date"]["day"], answer["date"]["month"], answer["date"]["year"]
+                        answer["date"]["day"],
+                        answer["date"]["month"],
+                        answer["date"]["year"],
                     ).strip()
                 ]
             ),
@@ -234,19 +240,21 @@ def drop_metric(sample: str, reference: list[str]) -> Tuple[float, float]:
 
 
 class DropEval(Eval):
-    def __init__(self, num_examples: int | None = None, train_samples_per_prompt: int = 3):
+    def __init__(
+        self, num_examples: int | None = None, train_samples_per_prompt: int = 3
+    ):
         self.seed = 42
         self._num_examples = num_examples
         self._train_samples_per_prompt = train_samples_per_prompt
-        self.train_jsonl = (
-            "https://openaipublic.blob.core.windows.net/simple-evals/drop_v0_train.jsonl.gz"
-        )
-        self.test_jsonl = (
-            "https://openaipublic.blob.core.windows.net/simple-evals/drop_v0_dev.jsonl.gz"
-        )
-        with gzip.GzipFile(fileobj=common.url_to_fileobj(self.train_jsonl, binary=True), mode="rb") as f:
+        self.train_jsonl = "https://openaipublic.blob.core.windows.net/simple-evals/drop_v0_train.jsonl.gz"
+        self.test_jsonl = "https://openaipublic.blob.core.windows.net/simple-evals/drop_v0_dev.jsonl.gz"
+        with gzip.GzipFile(
+            fileobj=common.url_to_fileobj(self.train_jsonl, binary=True), mode="rb"
+        ) as f:
             self.train_samples = list(map(json.loads, f.readlines()))
-        with gzip.GzipFile(fileobj=common.url_to_fileobj(self.test_jsonl, binary=True), mode="rb") as f:
+        with gzip.GzipFile(
+            fileobj=common.url_to_fileobj(self.test_jsonl, binary=True), mode="rb"
+        ) as f:
             self.test_samples = list(map(json.loads, f.readlines()))
             if self._num_examples:
                 self.test_samples = random.Random(self.seed).sample(
@@ -279,10 +287,14 @@ class DropEval(Eval):
                     prompt += """\n
 Think step by step, then write a line of the form "Answer: $ANSWER" at the end of your response.
                     """
-                    prompt_messages = [sampler._pack_message(content=prompt, role="user")]
+                    prompt_messages = [
+                        sampler._pack_message(content=prompt, role="user")
+                    ]
                     sampler_response = sampler(prompt_messages)
                     response_text = sampler_response.response_text
-                    actual_queried_prompt_messages = sampler_response.actual_queried_message_list
+                    actual_queried_prompt_messages = (
+                        sampler_response.actual_queried_message_list
+                    )
                     match = re.search(ANSWER_PATTERN, response_text)
                     extracted_answer = match.group(1) if match else response_text
                     em_score, f1_score = drop_metric(extracted_answer, correct_answers)
@@ -291,7 +303,9 @@ Think step by step, then write a line of the form "Answer: $ANSWER" at the end o
                         for correct_answer in correct_answers
                     ]
                     extracted_answers = [
-                        extracted_answer for i in range(len(correct_answers)) if matches[i]
+                        extracted_answer
+                        for i in range(len(correct_answers))
+                        if matches[i]
                     ]
                     score = True in matches
                     html = common.jinja_env.from_string(HTML_JINJA).render(
@@ -301,7 +315,9 @@ Think step by step, then write a line of the form "Answer: $ANSWER" at the end o
                         correct_answer=correct_answers,
                         extracted_answer=extracted_answers,
                     )
-                    convo = actual_queried_prompt_messages + [dict(content=extracted_answer, role="assistant")]
+                    convo = actual_queried_prompt_messages + [
+                        dict(content=extracted_answer, role="assistant")
+                    ]
                     return SingleEvalResult(
                         html=html,
                         score=score,

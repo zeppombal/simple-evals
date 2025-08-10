@@ -1,10 +1,9 @@
-import time
 import os
+import time
 
 import anthropic
-
-from ..types import MessageList, SamplerBase, SamplerResponse
-from .. import common
+import common
+from typess import MessageList, SamplerBase, SamplerResponse
 
 CLAUDE_SYSTEM_MESSAGE_LMSYS = (
     "The assistant is Claude, created by Anthropic. The current date is "
@@ -68,7 +67,9 @@ class ClaudeCompletionSampler(SamplerBase):
         while True:
             try:
                 if not common.has_only_user_assistant_messages(message_list):
-                    raise ValueError(f"Claude sampler only supports user and assistant messages, got {message_list}")
+                    raise ValueError(
+                        f"Claude sampler only supports user and assistant messages, got {message_list}"
+                    )
                 if self.system_message:
                     response_message = self.client.messages.create(
                         model=self.model,
@@ -77,7 +78,9 @@ class ClaudeCompletionSampler(SamplerBase):
                         temperature=self.temperature,
                         messages=message_list,
                     )
-                    claude_input_messages: MessageList = [{"role": "system", "content": self.system_message}] + message_list
+                    claude_input_messages: MessageList = [
+                        {"role": "system", "content": self.system_message}
+                    ] + message_list
                 else:
                     response_message = self.client.messages.create(
                         model=self.model,
