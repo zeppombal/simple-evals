@@ -1,7 +1,7 @@
 import argparse
 import json
-import subprocess
 from datetime import datetime
+from pathlib import Path
 
 import common
 import pandas as pd
@@ -10,6 +10,7 @@ from drop_eval import DropEval
 from gpqa_eval import GPQAEval
 from healthbench_eval import HealthBenchEval
 from healthbench_meta_eval import HealthBenchMetaEval
+from ifeval import IFEval
 from math_eval import MathEval
 from mgsm_eval import MGSMEval
 from mmlu_eval import MMLUEval
@@ -78,15 +79,67 @@ def main():
         help="Base url for custom grader.",
         default="http://localhost:8080/v1",
     )
+    parser.add_argument(
+        "--model-completion-args",
+        type=str,
+        help="JSON string of completion args to pass to the model.",
+        default="{}",
+    )
+    parser.add_argument(
+        "--grader-completion-args",
+        type=str,
+        help="JSON string of completion args to pass to the grader.",
+        default="{}",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        help="Directory to save the output JSON.",
+        default=".",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["full", "generate", "evaluate"],
+        default="full",
+        help="Execution mode: 'full' runs generation+evaluation (default), "
+        "'generate' only generates responses, 'evaluate' only grades pre-generated responses.",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Output path. For --mode=generate, this is the JSONL file path. "
+        "For --mode=evaluate/full, this is used as the base name for output files.",
+    )
+    parser.add_argument(
+        "--generation-input",
+        type=str,
+        default=None,
+        help="Path to generation JSONL file (required for --mode=evaluate).",
+    )
 
     args = parser.parse_args()
-    if "/" in args.model:
+
+    # Validate mode-specific requirements
+    if args.mode == "evaluate" and not args.generation_input:
+        parser.error("--mode=evaluate requires --generation-input")
+    if args.mode in ("generate", "full") and not args.model:
+        parser.error(f"--mode={args.mode} requires --model")
+
+    # For evaluate mode, we don't need a model sampler
+    if args.mode == "evaluate":
+        models = {"evaluate": None}
+    elif args.model and "/" in args.model:
         models = {
             args.model: ChatCompletionSampler(
                 model=args.model,
                 temperature=args.temperature,
                 max_tokens=2048,
                 base_url=args.base_url,
+                completion_args=json.loads(
+                    args.model_completion_args.replace("'", '"')
+                ),
             )
         }
     else:
@@ -312,6 +365,7 @@ def main():
             max_tokens=2048,
             base_url=args.base_url_grader,
             temperature=0.1,  # temperature != 0.0 in the event grading fails and we have to retry.
+            completion_args=json.loads(args.grader_completion_args.replace("'", '"')),
         )
     equality_checker = ChatCompletionSampler(model="gpt-4-turbo-preview")
     # ^^^ used for fuzzy matching, just for math
@@ -358,27 +412,43 @@ def main():
                 )
             case "healthbench":
                 return HealthBenchEval(
-                    grader_model=grading_sampler,
+                    grader_model=grading_sampler if args.mode != "generate" else None,
                     num_examples=10 if debug_mode else num_examples,
                     n_repeats=args.n_repeats or 1,
                     n_threads=args.n_threads or 1,
                     subset_name=None,
+                    mode=args.mode,
+                    generation_input_path=args.generation_input,
+                )
+            case "ifeval":
+                return IFEval(
+                    grader_model=grading_sampler if args.mode != "generate" else None,
+                    num_examples=10 if debug_mode else num_examples,
+                    n_repeats=args.n_repeats or 1,
+                    n_threads=args.n_threads or 1,
+                    subset_name=None,
+                    mode=args.mode,
+                    generation_input_path=args.generation_input,
                 )
             case "healthbench_hard":
                 return HealthBenchEval(
-                    grader_model=grading_sampler,
+                    grader_model=grading_sampler if args.mode != "generate" else None,
                     num_examples=10 if debug_mode else num_examples,
                     n_repeats=args.n_repeats or 1,
                     n_threads=args.n_threads or 1,
                     subset_name="hard",
+                    mode=args.mode,
+                    generation_input_path=args.generation_input,
                 )
             case "healthbench_consensus":
                 return HealthBenchEval(
-                    grader_model=grading_sampler,
+                    grader_model=grading_sampler if args.mode != "generate" else None,
                     num_examples=10 if debug_mode else num_examples,
                     n_repeats=args.n_repeats or 1,
                     n_threads=args.n_threads or 1,
                     subset_name="consensus",
+                    mode=args.mode,
+                    generation_input_path=args.generation_input,
                 )
             case "healthbench_meta":
                 return HealthBenchMetaEval(
@@ -386,6 +456,7 @@ def main():
                     num_examples=10 if debug_mode else num_examples,
                     n_repeats=args.n_repeats or 1,
                     n_threads=args.n_threads or 1,
+                    output_path=args.output,
                 )
             case _:
                 raise Exception(f"Unrecognized eval type: {eval_name}")
@@ -427,6 +498,9 @@ def main():
 
     now = datetime.now()
     date_str = now.strftime("%Y%m%d_%H%M%S")
+    # make output dir
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     for model_name, sampler in models.items():
         for eval_name, eval_obj in evals.items():
             result = eval_obj(sampler)
@@ -434,33 +508,55 @@ def main():
             file_stem = f"{eval_name}_{model_name.replace('/', '__')}"
             # file stem should also include the year, month, day, and time in hours and minutes
             file_stem += f"_{date_str}"
-            report_filename = f"{file_stem}{debug_suffix}.html"
-            print(f"Writing report to {report_filename}")
-            with open(report_filename, "w") as fh:
-                fh.write(common.make_report(result))
-            assert result.metrics is not None
-            metrics = result.metrics | {"score": result.score}
-            # Sort metrics by key
-            metrics = dict(sorted(metrics.items()))
-            print(metrics)
-            result_filename = f"{file_stem}{debug_suffix}.json"
-            with open(result_filename, "w") as f:
-                f.write(json.dumps(metrics, indent=2))
-            print(f"Writing results to {result_filename}")
 
-            full_result_filename = f"{file_stem}{debug_suffix}_allresults.json"
-            with open(full_result_filename, "w") as f:
-                result_dict = {
-                    "score": result.score,
-                    "metrics": result.metrics,
-                    "htmls": result.htmls,
-                    "convos": result.convos,
-                    "metadata": result.metadata,
-                }
-                f.write(json.dumps(result_dict, indent=2))
-                print(f"Writing all results to {full_result_filename}")
+            # Mode-specific output handling
+            if args.mode == "generate":
+                # Save generation JSONL
+                if args.output:
+                    generation_output = Path(args.output)
+                else:
+                    generation_output = (
+                        output_dir / f"{file_stem}{debug_suffix}_generations.jsonl"
+                    )
+                with open(generation_output, "w") as f:
+                    for record in result.metadata["example_level_metadata"]:
+                        f.write(json.dumps(record) + "\n")
+                print(f"Saved generations to {generation_output}")
+            else:
+                # evaluate or full mode: save HTML, metrics JSON, allresults JSON
+                # Use --output as base name if provided
+                if args.output:
+                    file_stem = Path(args.output).stem
 
-            mergekey2resultpath[f"{file_stem}"] = result_filename
+                report_filename = output_dir / f"{file_stem}{debug_suffix}.html"
+                print(f"Writing report to {report_filename}")
+                with open(report_filename, "w") as fh:
+                    fh.write(common.make_report(result))
+                assert result.metrics is not None
+                metrics = result.metrics | {"score": result.score}
+                # Sort metrics by key
+                metrics = dict(sorted(metrics.items()))
+                print(metrics)
+                result_filename = output_dir / f"{file_stem}{debug_suffix}.json"
+                with open(result_filename, "w") as f:
+                    f.write(json.dumps(metrics, indent=2))
+                print(f"Writing results to {result_filename}")
+
+                full_result_filename = (
+                    output_dir / f"{file_stem}{debug_suffix}_allresults.json"
+                )
+                with open(full_result_filename, "w") as f:
+                    result_dict = {
+                        "score": result.score,
+                        "metrics": result.metrics,
+                        "htmls": result.htmls,
+                        "convos": result.convos,
+                        "metadata": result.metadata,
+                    }
+                    f.write(json.dumps(result_dict, indent=2))
+                    print(f"Writing all results to {full_result_filename}")
+
+                mergekey2resultpath[f"{file_stem}"] = result_filename
     merge_metrics = []
     for eval_model_name, result_filename in mergekey2resultpath.items():
         try:
@@ -474,11 +570,12 @@ def main():
         merge_metrics.append(
             {"eval_name": eval_name, "model_name": model_name, "metric": result}
         )
-    merge_metrics_df = pd.DataFrame(merge_metrics).pivot(
-        index=["model_name"], columns="eval_name"
-    )
-    print("\nAll results: ")
-    print(merge_metrics_df.to_markdown())
+    if merge_metrics:
+        merge_metrics_df = pd.DataFrame(merge_metrics).pivot(
+            index=["model_name"], columns="eval_name"
+        )
+        print("\nAll results: ")
+        print(merge_metrics_df.to_markdown())
     return merge_metrics
 
 

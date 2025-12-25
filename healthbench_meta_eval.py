@@ -7,16 +7,20 @@ To run, use the following command (working directory should contain simple-evals
 """
 
 import json
+import os
 import random
+import threading
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Literal
 
 import blobfile as bf
 import common
 from healthbench_eval import GRADER_TEMPLATE, parse_json_to_dict
+from tqdm import tqdm
 from typess import Eval, EvalResult, SamplerBase, SingleEvalResult
 
-INPUT_PATH = "https://openaipublic.blob.core.windows.net/simple-evals/healthbench/2025-05-07-06-14-12_oss_meta_eval.jsonl"
+INPUT_PATH = "hb_data/meta_eval.jsonl"
 INDEX_STR_TEMPLATE = "pairwise_{model_or_physician}_{metric}_{pred_str}"
 CLUSTER_STR_TEMPLATE = "{cluster}: {index_str}"
 
@@ -36,6 +40,7 @@ class HealthBenchMetaEval(Eval):
         num_examples: int | None = None,
         n_threads: int = 120,
         n_repeats: int = 1,
+        output_path: str | None = None,
     ):
         with bf.BlobFile(INPUT_PATH, "rb") as f:
             examples = [json.loads(line) for line in f]
@@ -49,6 +54,8 @@ class HealthBenchMetaEval(Eval):
         self.examples = examples * n_repeats
         self.grader_model = grader_model
         self.n_threads = n_threads
+        self.output_path = output_path
+        self._file_lock = threading.Lock()
 
     def grade_sample(
         self,
@@ -72,8 +79,74 @@ class HealthBenchMetaEval(Eval):
         metrics = {**metrics, **category_metrics}
         return metrics, grader_label, explanation
 
+    def _load_completed_indices(self) -> set[int]:
+        """Load indices of already-completed examples from the output file."""
+        if self.output_path is None or not os.path.exists(self.output_path):
+            return set()
+
+        completed = set()
+        try:
+            with open(self.output_path, "r") as f:
+                for line in f:
+                    if line.strip():
+                        record = json.loads(line)
+                        completed.add(record["idx"])
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Warning: Error reading checkpoint file: {e}")
+            return set()
+
+        return completed
+
+    def _save_result(
+        self,
+        idx: int,
+        single_eval_result: SingleEvalResult,
+        grader_label: bool,
+    ) -> None:
+        """Thread-safe method to save a single result to the output file."""
+        if self.output_path is None:
+            return
+
+        record = {
+            "idx": idx,
+            "single_eval_result": {
+                "html": single_eval_result.html,
+                "score": single_eval_result.score,
+                "convo": single_eval_result.convo,
+                "metrics": single_eval_result.metrics,
+            },
+            "grader_label": grader_label,
+        }
+
+        with self._file_lock:
+            with open(self.output_path, "a") as f:
+                f.write(json.dumps(record) + "\n")
+
+    def _load_all_results(self) -> list[tuple[int, SingleEvalResult, bool]]:
+        """Load all results from the output file, sorted by index."""
+        if self.output_path is None or not os.path.exists(self.output_path):
+            return []
+
+        results = []
+        with open(self.output_path, "r") as f:
+            for line in f:
+                if line.strip():
+                    record = json.loads(line)
+                    single_eval_result = SingleEvalResult(
+                        html=record["single_eval_result"]["html"],
+                        score=record["single_eval_result"]["score"],
+                        convo=record["single_eval_result"]["convo"],
+                        metrics=record["single_eval_result"]["metrics"],
+                    )
+                    results.append(
+                        (record["idx"], single_eval_result, record["grader_label"])
+                    )
+
+        results.sort(key=lambda x: x[0])
+        return results
+
     def __call__(self, sampler: SamplerBase) -> EvalResult:
-        def fn(row: dict) -> tuple[SingleEvalResult, bool | None]:
+        def fn(idx: int, row: dict) -> tuple[int, SingleEvalResult, bool]:
             convo_with_response = row["prompt"] + [
                 dict(content=row["completion"], role="assistant")
             ]
@@ -96,7 +169,6 @@ class HealthBenchMetaEval(Eval):
                     if label is True or label is False:
                         break
                 print("Grading failed due to bad JSON output, retrying...")
-
             metrics, grader_label, explanation = self.grade_sample(
                 grading_response_dict=grading_response_dict,
                 physician_labels=row["binary_labels"],
@@ -116,15 +188,59 @@ class HealthBenchMetaEval(Eval):
                 dict(content=response_text, role="assistant")
             ]
             return (
+                idx,
                 SingleEvalResult(html=html, score=score, convo=convo, metrics=metrics),
                 grader_label,
             )
 
-        # Run evaluation and collect results
-        all_outputs = common.map_with_progress(fn, self.examples, self.n_threads)
-        results: list[SingleEvalResult]
-        grader_labels: list[bool]
-        results, grader_labels = zip(*all_outputs)
+        # Load completed indices for resume functionality (only if output_path is set)
+        completed_indices = self._load_completed_indices()
+        if completed_indices:
+            print(f"Resuming: {len(completed_indices)}/{len(self.examples)} already completed")
+
+        # Determine which examples still need processing
+        remaining = [
+            (idx, example)
+            for idx, example in enumerate(self.examples)
+            if idx not in completed_indices
+        ]
+
+        # Store results in memory for the case when output_path is None
+        in_memory_results: list[tuple[int, SingleEvalResult, bool]] = []
+
+        # Process remaining examples with incremental saving
+        if remaining:
+            with ThreadPoolExecutor(max_workers=min(self.n_threads, len(remaining))) as executor:
+                futures = {
+                    executor.submit(fn, idx, example): idx
+                    for idx, example in remaining
+                }
+
+                with tqdm(
+                    total=len(self.examples),
+                    initial=len(completed_indices),
+                    desc="Processing examples",
+                ) as pbar:
+                    for future in as_completed(futures):
+                        idx, single_eval_result, grader_label = future.result()
+                        self._save_result(idx, single_eval_result, grader_label)
+                        in_memory_results.append((idx, single_eval_result, grader_label))
+                        pbar.update(1)
+
+        # Get all results in order
+        if self.output_path is not None:
+            # Load from file (includes both previously completed and newly processed)
+            all_results = self._load_all_results()
+        else:
+            # Use in-memory results when no output_path
+            all_results = sorted(in_memory_results, key=lambda x: x[0])
+
+        if not all_results:
+            raise ValueError("No results found. Ensure examples were processed.")
+
+        # Extract results and grader_labels in proper order
+        results: list[SingleEvalResult] = [r[1] for r in all_results]
+        grader_labels: list[bool] = [r[2] for r in all_results]
 
         # model pairwise agreement metrics
         model_agreement_metrics = compute_metrics_for_rater_by_class(

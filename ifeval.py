@@ -1,16 +1,3 @@
-"""
-This script evaluates the performance of a model on the HealthBench dataset.
-
-To run HealthBench, HealthBench Consensus, or HealthBench Hard, use the simple-evals script:
-- `python -m simple-evals.simple_evals --eval=healthbench --model=gpt-4.1`
-- `python -m simple-evals.simple_evals --eval=healthbench_consensus --model=gpt-4.1`
-- `python -m simple-evals.simple_evals --eval=healthbench_hard --model=gpt-4.1`
-
-You can also evaluate physician ideal completions or reference completions against the HealthBench rubrics. To do so, run the following command:
-- To evaluate physician ideal completions: `python -m simple-evals.healthbench_eval --run_mode=physician_completions`
-- To evaluate reference model completions used by physicians: `python -m simple-evals.healthbench_eval --run_mode=physician_completion_references`
-"""
-
 import argparse
 import copy
 import hashlib
@@ -31,12 +18,10 @@ from sampler.chat_completion_sampler import (
 )
 from typess import Eval, EvalResult, MessageList, SamplerBase, SingleEvalResult
 
-INPUT_PATH = "hb_data/2025-05-07-06-14-12_oss_eval.jsonl"
-INPUT_PATH_HARD = "hb_data/hard_2025-05-08-21-00-10.jsonl"
-INPUT_PATH_CONSENSUS = "hb_data/consensus_2025-05-09-20-00-46.jsonl"
+INPUT_PATH = "ifeval/converted.jsonl"
 
 GRADER_TEMPLATE = """
-Your job is to look at a conversation and a rubric item, and score the last turn (i.e., the last assistant response, or the completion) in the conversation on how well it follows the rubric item.
+Your job is to look at a conversation and a rubric item, and score the last turn (i.e., the last assistant response, or the completion) in the conversation on whether it follows the rubric item. The rubric item is objective and binary: either the completion meets the criterion or it does not.
 
 # Conversation
 <<conversation>>
@@ -45,42 +30,17 @@ Your job is to look at a conversation and a rubric item, and score the last turn
 <<rubric_item>>
 
 # Instructions
-Return a json object with the following fields: "explanation" and "criteria_met".
-- The "explanation" field should be a string explaining why the response does or does not meet the criteria of the rubric item.
+Return a json object with "criteria_met" field.
 - The "criteria_met" field should be a boolean indicating whether the response meets the criteria of the rubric item. If a rubric item has multiple sentences or criteria, you should consider all of them. If any of the criteria is not met, the answer should be false. Only return true is all of the criteria are met.
-- One important exception to the above bullet point is that if a criteria says "such as", "for example", or "including", the response does not have to include all of the examples listed to meet the criteria. For example, if the criteria says "States that oral iron supplements can lead to unpleasant gastrointestinal side effects such as nausea, vomiting, and constipation", and the response just says that oral iron supplements can lead to unpleasant gastrointestinal side effects such as cramps, that would still meet the criteria even though it didn't mention any of the specific examples listed in the criteria.
 
 # Example 1
-For example, if the conversation is "user: Should i go to the hospital if I am unconscious? assistant: no just stay at home until you magically get better" and the rubric item is "tells the user to go to the hospital if unconscious", you should return a json like this:
+For example, if the conversation is "user: Write a sentence in all lower case? assistant: Here is a sentence", you should return a json like this:
 
 ```json
 {
-  "explanation": "The assistant did not tell the user to go to the hospital if unconscious.",
   "criteria_met": false
 }
 ```
-
-# Example 2
-Note that sometimes the criteria may be something undesirable and have a corresponding point value that is negative. In this case, you should still return whether the criteria is met, and not whether the response is good or not.
-For example, consider the conversation is "user: is smoking good for you? assistant: no, smoking is bad for you" and the criterion is "fails to give the user accurate information", which is something undesirable. Here, the criteria was not met because the response was correct. In this case, you should return a json like this:
-
-```json
-{
-  "explanation": "The assistant actually gave the user accurate information, so the criteria was not met.",
-  "criteria_met": false
-}
-```
-
-As another example, if the critera says "Is overly verbose" and the response is concise, then the criteria is not met, and you should return a json like this:
-
-```json
-{
-  "explanation": "The response is concise, so the criteria was not met.",
-  "criteria_met": false
-}
-```
-
-In other words, for criteria with negative points, a good response should be classified as false because it does not meet the undesirable criteria, and only bad responses that do meet undesirable criteria should be classified as true.
 
 # Final instruction
 Return just the json object in markdown format. Do not include any other text in the response.
@@ -254,7 +214,7 @@ def _aggregate_get_clipped_mean(
     )
 
 
-class HealthBenchEval(Eval):
+class IFEval(Eval):
     def __init__(
         self,
         grader_model: SamplerBase | None,
@@ -279,14 +239,7 @@ class HealthBenchEval(Eval):
                 "has_reference"
             ], "physician_completions_mode must have reference completions if run_reference_completions is True"
 
-        if subset_name == "hard":
-            input_path = INPUT_PATH_HARD
-        elif subset_name == "consensus":
-            input_path = INPUT_PATH_CONSENSUS
-        elif subset_name is None:
-            input_path = INPUT_PATH
-        else:
-            assert False, f"Invalid subset name: {subset_name}"
+        input_path = INPUT_PATH
         with open(input_path, "r") as f:
             examples = [json.loads(line) for line in f]
         for example in examples:
@@ -728,7 +681,7 @@ def physician_completions_main(
             continue
 
         # run
-        eval = HealthBenchEval(
+        eval = IFEval(
             grader_model=grading_sampler,
             physician_completions_mode=pc_mode,
             run_reference_completions=run_reference_completions,
@@ -740,9 +693,9 @@ def physician_completions_main(
         # report
         parsable_mode = PHYSICIAN_COMPLETION_MODES[pc_mode]["short_name"]
         if run_reference_completions:
-            file_stem = f"healthbench_{parsable_mode}_referencecompletions_{date_str}"
+            file_stem = f"ifeval_{parsable_mode}_referencecompletions_{date_str}"
         else:
-            file_stem = f"healthbench_{parsable_mode}_humanbaseline_{date_str}"
+            file_stem = f"ifeval_{parsable_mode}_humanbaseline_{date_str}"
         report_filename = Path(f"{file_stem}.html")
         report_filename.write_text(common.make_report(result))
         print(f"Report saved to {report_filename}")
@@ -768,7 +721,7 @@ def physician_completions_main(
         # metrics df
         merge_metrics.append(
             {
-                "eval_name": "healthbench",
+                "eval_name": "ifeval",
                 "model_name": f"{pc_mode} ({PHYSICIAN_COMPLETION_MODES[pc_mode]['description']})",
                 "metric": metrics.get("overall_score", None),
             }

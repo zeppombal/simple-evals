@@ -1,6 +1,8 @@
+import re
 import time
 from typing import Any
 
+import litellm
 import openai
 from openai import OpenAI
 from typess import MessageList, SamplerBase, SamplerResponse
@@ -24,6 +26,7 @@ class ChatCompletionSampler(SamplerBase):
         temperature: float = 0.5,
         max_tokens: int = 1024,
         base_url: str = None,
+        completion_args: dict[str, Any] = {},
     ):
         self.api_key_name = "OPENAI_API_KEY"
         self.client = OpenAI(base_url=base_url)
@@ -33,6 +36,9 @@ class ChatCompletionSampler(SamplerBase):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.image_format = "url"
+        self.completion_args = completion_args
+        if "hosted_vllm" in model:
+            self.completion_args["api_key"] = "EMPTY"
 
     def _handle_image(
         self,
@@ -63,25 +69,35 @@ class ChatCompletionSampler(SamplerBase):
         trial = 0
         while True:
             try:
-                response = self.client.chat.completions.create(
+                response = litellm.completion(
                     model=self.model,
                     messages=message_list,
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
+                    **self.completion_args,
                 )
                 content = response.choices[0].message.content
                 if content is None:
                     raise ValueError("OpenAI API returned empty response; retrying")
+                sep_content = self.separate_thinking_from_response(content)
                 return SamplerResponse(
-                    response_text=content,
-                    response_metadata={"usage": response.usage},
+                    response_text=sep_content["response"],
+                    response_metadata={
+                        "usage": response.usage,
+                        "thinking": sep_content["thinking"],
+                    },
                     actual_queried_message_list=message_list,
                 )
             # NOTE: BadRequestError is triggered once for MMMU, please uncomment if you are reruning MMMU
-            except openai.BadRequestError as e:
+            except litellm.BadRequestError as e:
                 print("Bad Request Error", e)
                 return SamplerResponse(
                     response_text="No response (bad request).",
+                    response_metadata={"usage": None},
+                    actual_queried_message_list=message_list,
+                )
+            except ValueError as e:
+                print("Value Error", e)
+                return SamplerResponse(
+                    response_text="No response (value error).",
                     response_metadata={"usage": None},
                     actual_queried_message_list=message_list,
                 )
@@ -94,3 +110,32 @@ class ChatCompletionSampler(SamplerBase):
                 time.sleep(exception_backoff)
                 trial += 1
             # unknown error shall throw exception
+
+    @staticmethod
+    def separate_thinking_from_response(
+        response: str,
+        beginning_thinking_tag: str = "<think>",
+        end_thinking_tag: str = "</think>",
+    ) -> dict[str, str]:
+        # regex for getting the content between the tags into thinking and the content after the end tag into response. Using only regex (no split) to avoid issues if the tags appear multiple times
+        thinking_match = re.search(
+            f"{re.escape(beginning_thinking_tag)}(.*?){re.escape(end_thinking_tag)}",
+            response,
+            re.DOTALL,
+        )
+        if thinking_match:
+            thinking = thinking_match.group(1).strip()
+            actual_response = (
+                response[thinking_match.end() :].strip()
+                if response[thinking_match.end() :].strip()
+                else ""
+            )
+        else:
+            reponse_parts = response.split(end_thinking_tag)
+            if len(reponse_parts) > 1:
+                thinking = reponse_parts[0].replace(beginning_thinking_tag, "").strip()
+                actual_response = reponse_parts[1].strip()
+            else:
+                thinking = ""
+                actual_response = response.strip()
+        return {"response": actual_response.strip(), "thinking": thinking}

@@ -1,0 +1,10 @@
+openai 
+pandas 
+jinja2 
+requests 
+blobfile 
+scipy 
+anthropic
+tabulate
+litellm
+google-cloud-aiplatform
