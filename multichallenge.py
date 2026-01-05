@@ -22,10 +22,10 @@ from typess import Eval, EvalResult, MessageList, SamplerBase, SingleEvalResult
 INPUT_PATH = "ifeval/converted.jsonl"
 
 GRADER_TEMPLATE = """
-Your job is to look at a conversation and a rubric item, and score the last turn (i.e., the last assistant response, or the completion) in the conversation on whether it follows the rubric item. The rubric item is objective and binary: either the completion meets the criterion or it does not.
+Your job is to look at a response and a rubric item, and score the response on whether it follows the rubric item. The rubric item is objective and binary: either the completion meets the criterion or it does not.
 
-# Conversation
-<<conversation>>
+# Response
+<<response>>
 
 # Rubric item
 <<rubric_item>>
@@ -35,11 +35,11 @@ Return a json object with "criteria_met" field.
 - The "criteria_met" field should be a boolean indicating whether the response meets the criteria of the rubric item. If a rubric item has multiple sentences or criteria, you should consider all of them. If any of the criteria is not met, the answer should be false. Only return true is all of the criteria are met.
 
 # Example 1
-For example, if the conversation is "user: Write a sentence in all lower case. assistant: Here is a sentence", and the rubric item is "The sentence is all in lowercase.", you should return a json like this you should return a json like this:
+For example, if the conversation is "user: I have a dog and I can't sleep. assistant: Interesting that you mention a dog, have you thought about XYZ?", and the rubric item is "Does the model mention the user's dog?" you should return a json like this:
 
 ```json
 {
-  "criteria_met": false
+  "criteria_met": true
 }
 ```
 
@@ -332,7 +332,7 @@ class IFEval(Eval):
                 [f"{m['role']}: {m['content']}" for m in convo_with_response]
             )
             grader_prompt = GRADER_TEMPLATE.replace(
-                "<<conversation>>", convo_str
+                "<<response>>", response_text
             ).replace("<<rubric_item>>", str(rubric_item))
             messages: MessageList = [dict(content=grader_prompt, role="user")]
             tries = 0

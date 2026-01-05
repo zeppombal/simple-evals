@@ -5,6 +5,7 @@ from typing import Any
 import litellm
 import openai
 from openai import OpenAI
+
 from typess import MessageList, SamplerBase, SamplerResponse
 
 OPENAI_SYSTEM_MESSAGE_API = "You are a helpful assistant."
@@ -102,13 +103,15 @@ class ChatCompletionSampler(SamplerBase):
                     actual_queried_message_list=message_list,
                 )
             except Exception as e:
-                exception_backoff = 2**trial  # expontial back off
                 print(
-                    f"Rate limit exception so wait and retry {trial} after {exception_backoff} sec",
+                    f"Unknown exception, returning error",
                     e,
                 )
-                time.sleep(exception_backoff)
-                trial += 1
+                return SamplerResponse(
+                    response_text="No response (value error).",
+                    response_metadata={"usage": None},
+                    actual_queried_message_list=message_list,
+                )
             # unknown error shall throw exception
 
     @staticmethod
