@@ -8,6 +8,8 @@ from openai import OpenAI
 
 from typess import MessageList, SamplerBase, SamplerResponse
 
+litellm.suppress_debug_info = True
+
 OPENAI_SYSTEM_MESSAGE_API = "You are a helpful assistant."
 OPENAI_SYSTEM_MESSAGE_CHATGPT = (
     "You are ChatGPT, a large language model trained by OpenAI, based on the GPT-4 architecture."

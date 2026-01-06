@@ -22,9 +22,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-import common
 import numpy as np
 import pandas as pd
+
+import common
 from sampler.chat_completion_sampler import (
     OPENAI_SYSTEM_MESSAGE_API,
     ChatCompletionSampler,
@@ -398,6 +399,7 @@ class HealthBenchEval(Eval):
             grade_rubric_item,
             rubric_items,
             pbar=False,
+            num_threads=self.n_threads,
         )
 
         # compute the overall score
