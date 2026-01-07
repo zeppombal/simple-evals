@@ -352,6 +352,7 @@ class IFEval(Eval):
             grade_rubric_item,
             rubric_items,
             pbar=False,
+            num_threads=self.n_threads,
         )
 
         # compute the overall score
