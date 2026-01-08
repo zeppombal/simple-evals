@@ -47,7 +47,7 @@ def main(argv):
     with open(_INPUT_RESPONSE_DATA.value, "r") as f:
         for i, l in enumerate(f):
             example = json.loads(l)
-            prompt_to_response[inputs[i].prompt] = example["response"]
+            prompt_to_response[inputs[i].prompt] = example["response_text"]
 
     # get instruction following results
     for func, output_file_name in [
