@@ -15,9 +15,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Literal
 
 import blobfile as bf
+from tqdm import tqdm
+
 import common
 from healthbench_eval import GRADER_TEMPLATE, parse_json_to_dict
-from tqdm import tqdm
 from typess import Eval, EvalResult, SamplerBase, SingleEvalResult
 
 INPUT_PATH = "hb_data/meta_eval.jsonl"
@@ -156,9 +157,8 @@ class HealthBenchMetaEval(Eval):
             grader_prompt = GRADER_TEMPLATE.replace("<<conversation>>", prompt_str)
             grader_prompt = grader_prompt.replace("<<rubric_item>>", row["rubric"])
             grader_convo = [dict(content=grader_prompt, role="user")]
-
             while True:
-                sampler_response = sampler(grader_convo)
+                sampler_response = self.grader_model(grader_convo)
                 response_text = sampler_response.response_text
                 actual_queried_grader_convo = (
                     sampler_response.actual_queried_message_list
@@ -196,7 +196,9 @@ class HealthBenchMetaEval(Eval):
         # Load completed indices for resume functionality (only if output_path is set)
         completed_indices = self._load_completed_indices()
         if completed_indices:
-            print(f"Resuming: {len(completed_indices)}/{len(self.examples)} already completed")
+            print(
+                f"Resuming: {len(completed_indices)}/{len(self.examples)} already completed"
+            )
 
         # Determine which examples still need processing
         remaining = [
@@ -210,10 +212,11 @@ class HealthBenchMetaEval(Eval):
 
         # Process remaining examples with incremental saving
         if remaining:
-            with ThreadPoolExecutor(max_workers=min(self.n_threads, len(remaining))) as executor:
+            with ThreadPoolExecutor(
+                max_workers=min(self.n_threads, len(remaining))
+            ) as executor:
                 futures = {
-                    executor.submit(fn, idx, example): idx
-                    for idx, example in remaining
+                    executor.submit(fn, idx, example): idx for idx, example in remaining
                 }
 
                 with tqdm(
@@ -224,7 +227,9 @@ class HealthBenchMetaEval(Eval):
                     for future in as_completed(futures):
                         idx, single_eval_result, grader_label = future.result()
                         self._save_result(idx, single_eval_result, grader_label)
-                        in_memory_results.append((idx, single_eval_result, grader_label))
+                        in_memory_results.append(
+                            (idx, single_eval_result, grader_label)
+                        )
                         pbar.update(1)
 
         # Get all results in order

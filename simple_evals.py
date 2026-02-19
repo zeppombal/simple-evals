@@ -3,14 +3,18 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-import common
 import pandas as pd
+
+import common
 from browsecomp_eval import BrowseCompEval
 from drop_eval import DropEval
 from gpqa_eval import GPQAEval
 from healthbench_eval import HealthBenchEval
 from healthbench_meta_eval import HealthBenchMetaEval
 from ifeval import IFEval
+from ifeval_ar import IFEvalAR
+from ifeval_da import IFEvalDA
+from ifeval_pwc import IFEvalPWC
 from math_eval import MathEval
 from mgsm_eval import MGSMEval
 from mmlu_eval import MMLUEval
@@ -117,6 +121,12 @@ def main():
         type=str,
         default=None,
         help="Path to generation JSONL file (required for --mode=evaluate).",
+    )
+    parser.add_argument(
+        "--generation-input-b",
+        type=str,
+        default=None,
+        help="Path to second generation JSONL file (required for ifeval_pwc).",
     )
 
     args = parser.parse_args()
@@ -429,6 +439,34 @@ def main():
                     subset_name=None,
                     mode=args.mode,
                     generation_input_path=args.generation_input,
+                )
+            case "ifeval_ar":
+                return IFEvalAR(
+                    grader_model=grading_sampler if args.mode != "generate" else None,
+                    num_examples=10 if debug_mode else num_examples,
+                    n_repeats=args.n_repeats or 1,
+                    n_threads=args.n_threads or 1,
+                    subset_name=None,
+                    mode=args.mode,
+                    generation_input_path=args.generation_input,
+                )
+            case "ifeval_da":
+                return IFEvalDA(
+                    grader_model=grading_sampler if args.mode != "generate" else None,
+                    num_examples=10 if debug_mode else num_examples,
+                    n_repeats=args.n_repeats or 1,
+                    n_threads=args.n_threads or 1,
+                    subset_name=None,
+                    mode=args.mode,
+                    generation_input_path=args.generation_input,
+                )
+            case "ifeval_pwc":
+                return IFEvalPWC(
+                    grader_model=grading_sampler,
+                    num_examples=10 if debug_mode else num_examples,
+                    n_threads=args.n_threads or 1,
+                    generation_input_path_a=args.generation_input,
+                    generation_input_path_b=args.generation_input_b,
                 )
             case "healthbench_hard":
                 return HealthBenchEval(
