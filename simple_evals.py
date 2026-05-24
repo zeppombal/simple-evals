@@ -15,6 +15,9 @@ from ifeval import IFEval
 from ifeval_ar import IFEvalAR
 from ifeval_da import IFEvalDA
 from ifeval_pwc import IFEvalPWC
+from livecodebench_eval import LiveCodeBenchEval
+from livecodebench_rubric import LiveCodeBenchRubric
+from livecodebench_rubric_ar import LiveCodeBenchRubricAR
 from math_eval import MathEval
 from mgsm_eval import MGSMEval
 from mmlu_eval import MMLUEval
@@ -127,6 +130,25 @@ def main():
         type=str,
         default=None,
         help="Path to second generation JSONL file (required for ifeval_pwc).",
+    )
+    parser.add_argument(
+        "--release-version",
+        type=str,
+        default="release_v6",
+        help="LiveCodeBench dataset release version (e.g. release_v6, release_v2, "
+        "release_latest, v1_v3, v4_v5).",
+    )
+    parser.add_argument(
+        "--max-public-tests",
+        type=int,
+        default=None,
+        help="Cap on public test cases turned into rubric items (LiveCodeBench rubric evals).",
+    )
+    parser.add_argument(
+        "--max-private-tests",
+        type=int,
+        default=None,
+        help="Cap on private test cases turned into rubric items (LiveCodeBench rubric evals).",
     )
 
     args = parser.parse_args()
@@ -467,6 +489,40 @@ def main():
                     n_threads=args.n_threads or 1,
                     generation_input_path_a=args.generation_input,
                     generation_input_path_b=args.generation_input_b,
+                )
+            case "livecodebench":
+                return LiveCodeBenchEval(
+                    grader_model=None,  # faithful eval executes code, no LLM judge
+                    num_examples=10 if debug_mode else num_examples,
+                    n_repeats=args.n_repeats or 1,
+                    n_threads=args.n_threads or 1,
+                    release_version=args.release_version,
+                    mode=args.mode,
+                    generation_input_path=args.generation_input,
+                )
+            case "livecodebench_rubric":
+                return LiveCodeBenchRubric(
+                    grader_model=grading_sampler if args.mode != "generate" else None,
+                    num_examples=10 if debug_mode else num_examples,
+                    n_repeats=args.n_repeats or 1,
+                    n_threads=args.n_threads or 1,
+                    release_version=args.release_version,
+                    max_public_tests=args.max_public_tests,
+                    max_private_tests=args.max_private_tests,
+                    mode=args.mode,
+                    generation_input_path=args.generation_input,
+                )
+            case "livecodebench_rubric_ar":
+                return LiveCodeBenchRubricAR(
+                    grader_model=grading_sampler if args.mode != "generate" else None,
+                    num_examples=10 if debug_mode else num_examples,
+                    n_repeats=args.n_repeats or 1,
+                    n_threads=args.n_threads or 1,
+                    release_version=args.release_version,
+                    max_public_tests=args.max_public_tests,
+                    max_private_tests=args.max_private_tests,
+                    mode=args.mode,
+                    generation_input_path=args.generation_input,
                 )
             case "healthbench_hard":
                 return HealthBenchEval(

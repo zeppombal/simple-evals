@@ -8,3 +8,7 @@ anthropic
 tabulate
 litellm
 google-cloud-aiplatform
+# LiveCodeBench's `code_generation_lite` is a script-based HF dataset; the
+# `datasets` 4.x line removed loading-script / trust_remote_code support, so pin <4.0.
+datasets>=3.2,<4.0
+tqdm
