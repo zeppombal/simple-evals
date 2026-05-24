@@ -150,6 +150,20 @@ def main():
         default=None,
         help="Cap on private test cases turned into rubric items (LiveCodeBench rubric evals).",
     )
+    parser.add_argument(
+        "--start-date",
+        type=str,
+        default=None,
+        help="LiveCodeBench: only include problems whose contest date is on/after this "
+        "date (YYYY-MM-DD). Applied at generation time.",
+    )
+    parser.add_argument(
+        "--end-date",
+        type=str,
+        default=None,
+        help="LiveCodeBench: only include problems whose contest date is on/before this "
+        "date (YYYY-MM-DD). Applied at generation time.",
+    )
 
     args = parser.parse_args()
 
@@ -497,6 +511,8 @@ def main():
                     n_repeats=args.n_repeats or 1,
                     n_threads=args.n_threads or 1,
                     release_version=args.release_version,
+                    start_date=args.start_date or None,
+                    end_date=args.end_date or None,
                     mode=args.mode,
                     generation_input_path=args.generation_input,
                 )
@@ -507,6 +523,8 @@ def main():
                     n_repeats=args.n_repeats or 1,
                     n_threads=args.n_threads or 1,
                     release_version=args.release_version,
+                    start_date=args.start_date or None,
+                    end_date=args.end_date or None,
                     max_public_tests=args.max_public_tests,
                     max_private_tests=args.max_private_tests,
                     mode=args.mode,
@@ -519,6 +537,8 @@ def main():
                     n_repeats=args.n_repeats or 1,
                     n_threads=args.n_threads or 1,
                     release_version=args.release_version,
+                    start_date=args.start_date or None,
+                    end_date=args.end_date or None,
                     max_public_tests=args.max_public_tests,
                     max_private_tests=args.max_private_tests,
                     mode=args.mode,
