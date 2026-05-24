@@ -12,7 +12,9 @@ faithful execution sample and the individual test cases.
 
 import hashlib
 import json
+import os
 import random
+import tempfile
 from typing import Literal
 
 import numpy as np
@@ -25,6 +27,20 @@ from ifeval import (  # reuse the shared helpers / aggregation / HTML template
 )
 from livecodebench_common import codegen_metrics, extract_solution, load_examples
 from typess import Eval, EvalResult, MessageList, SamplerBase, SingleEvalResult
+
+
+def _local_exec_tmpdir() -> str:
+    """Node-local temp dir for the code-execution harness.
+
+    LCB's `check_correctness` spawns a `multiprocessing.Manager()` per problem,
+    which opens an AF_UNIX socket under `$TMPDIR`. If `$TMPDIR` is on NFS (common on
+    clusters), the Manager's socket cleanup hits ".nfs* Device or resource busy" and
+    breaks the process pool, crashing the eval. Force a node-local dir (ext4 /tmp by
+    default); override with LCB_EXEC_TMPDIR (e.g. /mnt/data/<user>/lcb_tmp).
+    """
+    d = os.environ.get("LCB_EXEC_TMPDIR", "/tmp")
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
 def _is_pass(code) -> bool:
@@ -104,13 +120,26 @@ class LiveCodeBenchEval(Eval):
         generations = [[c] for c in codes]
 
         # One batched call to the unmodified LCB harness (manages its own pool).
-        _, results, final_metadata = codegen_metrics(
-            eval_samples,
-            generations,
-            k_list=[1],
-            num_process_evaluate=self.num_process_evaluate,
-            timeout=self.timeout,
-        )
+        # Force a node-local TMPDIR so the per-problem multiprocessing.Manager sockets
+        # don't land on NFS (which crashes the pool). Restored afterwards.
+        _exec_tmp = _local_exec_tmpdir()
+        _prev_env, _prev_tf = os.environ.get("TMPDIR"), tempfile.tempdir
+        os.environ["TMPDIR"] = _exec_tmp
+        tempfile.tempdir = _exec_tmp
+        try:
+            _, results, final_metadata = codegen_metrics(
+                eval_samples,
+                generations,
+                k_list=[1],
+                num_process_evaluate=self.num_process_evaluate,
+                timeout=self.timeout,
+            )
+        finally:
+            tempfile.tempdir = _prev_tf
+            if _prev_env is None:
+                os.environ.pop("TMPDIR", None)
+            else:
+                os.environ["TMPDIR"] = _prev_env
 
         single_results: list[SingleEvalResult] = []
         for i, record in enumerate(records):

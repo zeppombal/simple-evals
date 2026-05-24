@@ -85,9 +85,9 @@ class LiveCodeBenchRubric(Eval):
         self.max_private_tests = max_private_tests
 
         if mode == "evaluate":
-            assert (
-                generation_input_path is not None
-            ), "generation_input_path is required for mode='evaluate'"
+            assert generation_input_path is not None, (
+                "generation_input_path is required for mode='evaluate'"
+            )
             self.examples = []
         else:
             rng = random.Random(0)
