@@ -85,12 +85,17 @@ class LiveCodeBenchEval(Eval):
         num_process_evaluate: int | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
+        # If True, run every test case in its own process so each gets an independent
+        # pass/fail label (no short-circuit at first failure). Needed for clean
+        # per-test judge-vs-execution comparison; costs one execution per test.
+        per_test_truth: bool = False,
         mode: Literal["full", "generate", "evaluate"] = "full",
         generation_input_path: str | None = None,
     ):
         self.n_threads = n_threads
         self.timeout = timeout
         self.num_process_evaluate = num_process_evaluate or n_threads
+        self.per_test_truth = per_test_truth
         self.mode = mode
         self.generation_input_path = generation_input_path
 
@@ -113,22 +118,19 @@ class LiveCodeBenchEval(Eval):
     # ------------------------------------------------------------------
     # Grading via real code execution (faithful to LiveCodeBench).
     # ------------------------------------------------------------------
-    def _grade_records(self, records: list[dict]) -> list[SingleEvalResult]:
-        """Run LCB's `codegen_metrics` once over all records and build results."""
-        eval_samples = [r["evaluation_sample"] for r in records]
-        codes = [extract_solution(r["response_text"]) for r in records]
-        generations = [[c] for c in codes]
+    def _run_codegen_metrics(self, samples: list[dict], generations: list[list[str]]):
+        """Call LCB's `codegen_metrics`, forcing a node-local TMPDIR.
 
-        # One batched call to the unmodified LCB harness (manages its own pool).
-        # Force a node-local TMPDIR so the per-problem multiprocessing.Manager sockets
-        # don't land on NFS (which crashes the pool). Restored afterwards.
+        The per-problem `multiprocessing.Manager` sockets must not land on NFS (that
+        crashes the pool). TMPDIR is overridden for the duration and restored after.
+        """
         _exec_tmp = _local_exec_tmpdir()
         _prev_env, _prev_tf = os.environ.get("TMPDIR"), tempfile.tempdir
         os.environ["TMPDIR"] = _exec_tmp
         tempfile.tempdir = _exec_tmp
         try:
             _, results, final_metadata = codegen_metrics(
-                eval_samples,
+                samples,
                 generations,
                 k_list=[1],
                 num_process_evaluate=self.num_process_evaluate,
@@ -140,36 +142,90 @@ class LiveCodeBenchEval(Eval):
                 os.environ.pop("TMPDIR", None)
             else:
                 os.environ["TMPDIR"] = _prev_env
+        return results, final_metadata
+
+    def _compute_passes(
+        self, records: list[dict], codes: list[str]
+    ) -> tuple[list[list[bool]], list[dict]]:
+        """Per-record (per_test_passed, error_meta), indexed by global test index.
+
+        Default: one batched `codegen_metrics` call. LCB short-circuits at the first
+        failing test, so tests after it are reported as not-passed (not-reached).
+
+        `per_test_truth`: run every test in its own process (one single-test sample
+        per (record, test)) so each test gets an independent label with no
+        short-circuit — at the cost of one execution per test.
+        """
+        in_outs = [json.loads(r["evaluation_sample"]["input_output"]) for r in records]
+        n_tests = [len(io["inputs"]) for io in in_outs]
+
+        if not self.per_test_truth:
+            results, final_metadata = self._run_codegen_metrics(
+                [r["evaluation_sample"] for r in records], [[c] for c in codes]
+            )
+            passes, errors = [], []
+            for i in range(len(records)):
+                res_list = results[i][0] if results.get(i) else []
+                passes.append(
+                    [j < len(res_list) and _is_pass(res_list[j]) for j in range(n_tests[i])]
+                )
+                try:
+                    errors.append(json.loads(final_metadata[i][0]))
+                except Exception:
+                    errors.append({})
+            return passes, errors
+
+        # per_test_truth: flatten to one single-test sample per (record, test).
+        samples_linear: list[dict] = []
+        gens_linear: list[list[str]] = []
+        remap: list[tuple[int, int]] = []
+        for i, io in enumerate(in_outs):
+            fn = io.get("fn_name")
+            for j, (inp, out) in enumerate(zip(io["inputs"], io["outputs"])):
+                samples_linear.append(
+                    {
+                        "input_output": json.dumps(
+                            {"inputs": [inp], "outputs": [out], "fn_name": fn}
+                        )
+                    }
+                )
+                gens_linear.append([codes[i]])
+                remap.append((i, j))
+        results, _ = self._run_codegen_metrics(samples_linear, gens_linear)
+        passes = [[False] * n for n in n_tests]
+        for k, (i, j) in enumerate(remap):
+            rl = results[k][0] if results.get(k) else []
+            passes[i][j] = bool(rl) and _is_pass(rl[0])
+        errors = [{"mode": "per_test_independent"} for _ in records]
+        return passes, errors
+
+    def _grade_records(self, records: list[dict]) -> list[SingleEvalResult]:
+        """Execute each submission against its tests and build per-example results."""
+        codes = [extract_solution(r["response_text"]) for r in records]
+        per_passes, errors = self._compute_passes(records, codes)
 
         single_results: list[SingleEvalResult] = []
         for i, record in enumerate(records):
             code = codes[i]
-            res_list = results[i][0] if results.get(i) else []
-            try:
-                error_meta = json.loads(final_metadata[i][0])
-            except Exception:
-                error_meta = {}
-
-            in_outs = json.loads(record["evaluation_sample"]["input_output"])
-            num_total_tests = len(in_outs["inputs"])
+            per_test_passed = per_passes[i]
+            error_meta = errors[i]
+            num_total_tests = len(per_test_passed)
             n_public = len(record.get("public_test_cases", []) or [])
 
-            passed_count = sum(1 for c in res_list if _is_pass(c))
+            passed_count = sum(1 for p in per_test_passed if p)
             solved = bool(num_total_tests > 0 and passed_count == num_total_tests)
             test_case_pass_rate = (
                 passed_count / num_total_tests if num_total_tests else 0.0
             )
 
-            per_test = []
-            for idx in range(num_total_tests):
-                passed = idx < len(res_list) and _is_pass(res_list[idx])
-                per_test.append(
-                    {
-                        "index": idx,
-                        "kind": "public" if idx < n_public else "private",
-                        "passed": passed,
-                    }
-                )
+            per_test = [
+                {
+                    "index": j,
+                    "kind": "public" if j < n_public else "private",
+                    "passed": bool(per_test_passed[j]),
+                }
+                for j in range(num_total_tests)
+            ]
 
             score = 1.0 if solved else 0.0
             platform, difficulty = record["example_tags"][:2]
@@ -213,6 +269,7 @@ class LiveCodeBenchEval(Eval):
                         "num_total_tests": num_total_tests,
                         "num_passed_tests": passed_count,
                         "per_test_results": per_test,
+                        "per_test_truth": self.per_test_truth,
                         "extracted_code": code,
                         "error_metadata": error_meta,
                         "usage": record["response_metadata"]["usage"],
@@ -227,6 +284,29 @@ class LiveCodeBenchEval(Eval):
                 )
             )
         return single_results
+
+    def _finalize(self, single_results: list[SingleEvalResult]) -> EvalResult:
+        """Aggregate, then add pooled (micro) and per-instance (macro) test pass rates.
+
+        avg_test_pass_micro = total tests passed / total tests (weights by #tests).
+        avg_test_pass_macro = mean over instances of (tests passed / tests).
+        Both are exact only with per_test_truth; otherwise they reflect the
+        short-circuit (a lower bound on the true per-test pass rate).
+        """
+        result = _aggregate_get_clipped_mean(single_results)
+        meta = [s.example_level_metadata for s in single_results]
+        total_tests = sum(m["num_total_tests"] for m in meta)
+        total_passed = sum(m["num_passed_tests"] for m in meta)
+        rates = [m["test_case_pass_rate"] for m in meta]
+        if result.metrics is None:
+            result.metrics = {}
+        result.metrics["avg_test_pass_micro"] = (
+            total_passed / total_tests if total_tests else 0.0
+        )
+        result.metrics["avg_test_pass_macro"] = (
+            sum(rates) / len(rates) if rates else 0.0
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Mode router (mirrors IFEval).
@@ -255,7 +335,7 @@ class LiveCodeBenchEval(Eval):
 
     def _run_full(self, sampler: SamplerBase) -> EvalResult:
         records = self._generate_records(sampler)
-        return _aggregate_get_clipped_mean(self._grade_records(records))
+        return self._finalize(self._grade_records(records))
 
     def _run_generation(self, sampler: SamplerBase) -> EvalResult:
         records = self._generate_records(sampler)
@@ -274,4 +354,4 @@ class LiveCodeBenchEval(Eval):
     def _run_evaluation(self) -> EvalResult:
         with open(self.generation_input_path, "r") as f:
             records = [json.loads(line) for line in f]
-        return _aggregate_get_clipped_mean(self._grade_records(records))
+        return self._finalize(self._grade_records(records))

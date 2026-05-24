@@ -171,6 +171,13 @@ def main():
         help="LiveCodeBench faithful eval: per-test-case execution timeout in seconds "
         "(default 6).",
     )
+    parser.add_argument(
+        "--lcb-per-test-truth",
+        action="store_true",
+        help="LiveCodeBench faithful eval: execute every test case independently (no "
+        "short-circuit at first failure) so each test gets a clean pass/fail label. "
+        "Costs one execution per test; needed for per-test judge-vs-execution analysis.",
+    )
 
     args = parser.parse_args()
 
@@ -521,6 +528,7 @@ def main():
                     start_date=args.start_date or None,
                     end_date=args.end_date or None,
                     timeout=args.lcb_timeout,
+                    per_test_truth=args.lcb_per_test_truth,
                     mode=args.mode,
                     generation_input_path=args.generation_input,
                 )
