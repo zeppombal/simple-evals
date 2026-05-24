@@ -43,7 +43,7 @@ Your job is to determine whether a candidate Python solution to a programming pr
 
 # Instructions
 Return a json object with a "criteria_met" field.
-- "criteria_met" should be a boolean: true only if running the candidate code on the given input would produce exactly the expected output (ignoring trailing whitespace). A runtime error, a wrong answer, an infinite loop / timeout, or code that does not compile all mean the criterion is NOT met.
+- "criteria_met" should be a boolean: true only if running the candidate code on the given input would produce exactly the expected output (ignoring trailing whitespace). A runtime error, a wrong answer, an infinite loop / timeout (30 seconds), or code that does not compile all mean the criterion is NOT met.
 
 # Example
 ```json
