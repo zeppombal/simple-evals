@@ -164,6 +164,13 @@ def main():
         help="LiveCodeBench: only include problems whose contest date is on/before this "
         "date (YYYY-MM-DD). Applied at generation time.",
     )
+    parser.add_argument(
+        "--lcb-timeout",
+        type=int,
+        default=6,
+        help="LiveCodeBench faithful eval: per-test-case execution timeout in seconds "
+        "(default 6).",
+    )
 
     args = parser.parse_args()
 
@@ -513,6 +520,7 @@ def main():
                     release_version=args.release_version,
                     start_date=args.start_date or None,
                     end_date=args.end_date or None,
+                    timeout=args.lcb_timeout,
                     mode=args.mode,
                     generation_input_path=args.generation_input,
                 )
