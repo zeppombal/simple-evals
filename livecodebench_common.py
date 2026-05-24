@@ -16,36 +16,66 @@ import sys
 #
 # LiveCodeBench lives as a vendored directory inside this repo. It is a PEP-420
 # namespace package (no top-level __init__.py), so we just need it on sys.path.
-# However, `lcb_runner/prompts/code_generation.py` runs a module-level
-# `open("lcb_runner/prompts/few_shot_examples/.../*.json")` with a path relative
-# to the LiveCodeBench directory, so we temporarily chdir there during import.
+# The dataset loader, code extractor and execution harness all import cleanly
+# regardless of the current working directory.
+#
+# We deliberately do NOT import the `lcb_runner.prompts` package: its __init__
+# eagerly imports sibling modules that require `anthropic`, and
+# `prompts/code_generation.py` runs a module-level `open(...)` with a path
+# relative to the LiveCodeBench dir (the few-shot example JSONs, which are not
+# always present). Instead we inline LCB's tiny generic code-generation prompt
+# below, copied verbatim, so the prompt stays faithful without the fragile import.
 # ---------------------------------------------------------------------------
 _LCB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "LiveCodeBench")
 if _LCB_DIR not in sys.path:
     sys.path.insert(0, _LCB_DIR)
 
-_cwd = os.getcwd()
-try:
-    os.chdir(_LCB_DIR)
-    from lcb_runner.lm_styles import LMStyle
-    from lcb_runner.prompts.code_generation import (
-        PromptConstants,
-        get_generic_question_template_answer,
-    )
-    from lcb_runner.utils.extraction_utils import extract_code
-    from lcb_runner.benchmarks.code_generation import (
-        CodeGenerationProblem,
-        load_code_generation_dataset,
-    )
-    from lcb_runner.evaluation.compute_code_generation_metrics import codegen_metrics
-finally:
-    os.chdir(_cwd)
+from lcb_runner.lm_styles import LMStyle
+from lcb_runner.utils.extraction_utils import extract_code
+from lcb_runner.benchmarks.code_generation import (
+    CodeGenerationProblem,
+    load_code_generation_dataset,
+)
+from lcb_runner.evaluation.compute_code_generation_metrics import codegen_metrics
 
 from typess import MessageList
 
 # We build prompts in the standard OpenAI chat style (system + user), which is the
 # `OpenAIChat` path in LiveCodeBench. `extract_code` is also keyed off this style.
 LCB_LMSTYLE = LMStyle.OpenAIChat
+
+# --- Generic code-generation prompt, copied verbatim from LiveCodeBench ---
+# Source: LiveCodeBench/lcb_runner/prompts/code_generation.py
+# (PromptConstants.SYSTEM_MESSAGE_GENERIC / FORMATTING_* and
+#  get_generic_question_template_answer). Kept in sync by hand to avoid importing
+# the prompts package; the wording must match LCB exactly to stay faithful.
+_SYSTEM_MESSAGE_GENERIC = (
+    "You are an expert Python programmer. You will be given a question (problem "
+    "specification) and will generate a correct Python program that matches the "
+    "specification and passes all tests."
+)
+_FORMATTING_MESSAGE_WITH_STARTER_CODE = (
+    "You will use the following starter code to write the solution to the problem "
+    "and enclose your code within delimiters."
+)
+_FORMATTING_WITHOUT_STARTER_CODE = (
+    "Read the inputs from stdin solve the problem and write the answer to stdout "
+    "(do not directly test on the sample inputs). Enclose your code within "
+    "delimiters as follows. Ensure that when the python program runs, it reads the "
+    "inputs, runs the algorithm and writes output to STDOUT."
+)
+
+
+def _generic_question_template_answer(question: CodeGenerationProblem) -> str:
+    prompt = f"### Question:\n{question.question_content}\n\n"
+    if question.starter_code:
+        prompt += f"### Format: {_FORMATTING_MESSAGE_WITH_STARTER_CODE}\n"
+        prompt += f"```python\n{question.starter_code}\n```\n\n"
+    else:
+        prompt += f"### Format: {_FORMATTING_WITHOUT_STARTER_CODE}\n"
+        prompt += "```python\n# YOUR CODE HERE\n```\n\n"
+    prompt += "### Answer: (use the provided format with backticks)\n\n"
+    return prompt
 
 
 def build_prompt(problem: CodeGenerationProblem) -> MessageList:
@@ -55,8 +85,8 @@ def build_prompt(problem: CodeGenerationProblem) -> MessageList:
     generic question template (handles both starter-code / stdin formats).
     """
     return [
-        {"role": "system", "content": PromptConstants.SYSTEM_MESSAGE_GENERIC},
-        {"role": "user", "content": get_generic_question_template_answer(problem)},
+        {"role": "system", "content": _SYSTEM_MESSAGE_GENERIC},
+        {"role": "user", "content": _generic_question_template_answer(problem)},
     ]
 
 
