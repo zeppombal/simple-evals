@@ -113,41 +113,39 @@ class LiveCodeBenchRubric(Eval):
     # ------------------------------------------------------------------
     # Grading: one judge call per unit test (rubric item).
     # ------------------------------------------------------------------
-    def grade_sample(
+    def _judge_one(
+        self, problem_text: str, code: str, criterion: str, n_retries: int = 2
+    ) -> dict:
+        """Single judge call for one unit test (with retries on bad JSON)."""
+        grader_prompt = (
+            GRADER_TEMPLATE.replace("<<problem>>", problem_text)
+            .replace("<<code>>", code)
+            .replace("<<rubric_item>>", criterion)
+        )
+        messages: MessageList = [dict(content=grader_prompt, role="user")]
+        tries = 0
+        grading_response_dict = {"criteria_met": False}
+        while tries < n_retries:
+            sampler_response = self.grader_model(messages)
+            grading_response_dict = parse_json_to_dict(sampler_response.response_text)
+            if grading_response_dict.get("criteria_met") in (True, False):
+                break
+            print("Grading failed due to bad JSON output, retrying...")
+            tries += 1
+        return grading_response_dict
+
+    def _aggregate_grades(
         self,
-        problem_text: str,
-        code: str,
         rubric_dicts: list[dict],
+        grading_response_list: list[dict],
         example_tags: list[str],
     ) -> tuple[dict, str, list[dict]]:
+        """Turn per-test judge responses into per-problem metrics + grade records.
+
+        Pure (no judging) — the judge calls are made separately so the progress bar
+        can track individual tests across all problems.
+        """
         rubric_items = [RubricItem.from_dict(d) for d in rubric_dicts]
-
-        def grade_rubric_item(rubric_item: RubricItem, n_retries: int = 2) -> dict:
-            grader_prompt = (
-                GRADER_TEMPLATE.replace("<<problem>>", problem_text)
-                .replace("<<code>>", code)
-                .replace("<<rubric_item>>", rubric_item.criterion)
-            )
-            messages: MessageList = [dict(content=grader_prompt, role="user")]
-            tries = 0
-            grading_response_dict = {"criteria_met": False}
-            while tries < n_retries:
-                sampler_response = self.grader_model(messages)
-                grading_response_dict = parse_json_to_dict(
-                    sampler_response.response_text
-                )
-                if grading_response_dict.get("criteria_met") in (True, False):
-                    break
-                print("Grading failed due to bad JSON output, retrying...")
-                tries += 1
-            return grading_response_dict
-
-        grading_response_list = common.map_with_progress(
-            grade_rubric_item,
-            rubric_items,
-            pbar=False,
-            num_threads=self.n_threads,
-        )
 
         overall_score = calculate_score(rubric_items, grading_response_list)
         if overall_score is None:  # no test cases for this problem (shouldn't happen)
@@ -196,15 +194,30 @@ class LiveCodeBenchRubric(Eval):
         readable_explanation_str = "\n\n" + "\n\n".join(readable_explanation_list)
         return metrics, readable_explanation_str, rubric_items_with_grades
 
-    def _grade_record(self, record: dict) -> SingleEvalResult:
-        problem_text = _problem_text(record["prompt"])
-        code = extract_solution(record["response_text"])
+    def _build_plan(self, record: dict) -> dict:
+        """Precompute everything needed to judge a record's surviving tests."""
         rubric_dicts, skip_summary = build_rubric_dicts(
             record,
             max_public_tests=self.max_public_tests,
             max_private_tests=self.max_private_tests,
             max_test_chars=self.max_test_chars,
         )
+        return {
+            "record": record,
+            "code": extract_solution(record["response_text"]),
+            "problem_text": _problem_text(record["prompt"]),
+            "rubric_dicts": rubric_dicts,
+            "skip_summary": skip_summary,
+        }
+
+    def _score_record(
+        self, plan: dict, grading_response_list: list[dict]
+    ) -> SingleEvalResult:
+        """Build the per-problem result from precomputed per-test judge responses."""
+        record = plan["record"]
+        code = plan["code"]
+        rubric_dicts = plan["rubric_dicts"]
+        skip_summary = plan["skip_summary"]
         actual_msgs = record["actual_queried_message_list"]
         completion = [dict(content=record["response_text"], role="assistant")]
         convo = actual_msgs + completion
@@ -243,11 +256,12 @@ class LiveCodeBenchRubric(Eval):
                 },
             )
 
-        metrics, readable_explanation_str, rubric_items_with_grades = self.grade_sample(
-            problem_text=problem_text,
-            code=code,
-            rubric_dicts=rubric_dicts,
-            example_tags=record["example_tags"],
+        metrics, readable_explanation_str, rubric_items_with_grades = (
+            self._aggregate_grades(
+                rubric_dicts=rubric_dicts,
+                grading_response_list=grading_response_list,
+                example_tags=record["example_tags"],
+            )
         )
         score = metrics["overall_score"]
         html = common.jinja_env.from_string(
@@ -297,23 +311,7 @@ class LiveCodeBenchRubric(Eval):
         )
         return _aggregate_get_clipped_mean(results)
 
-    def _run_full(self, sampler: SamplerBase) -> EvalResult:
-        def fn(example: dict) -> SingleEvalResult:
-            sampler_response = sampler(example["prompt"])
-            record = _make_generation_record(
-                example=example,
-                response_text=sampler_response.response_text,
-                actual_queried_message_list=sampler_response.actual_queried_message_list,
-                response_usage=sampler_response.response_metadata.get("usage", None),
-            )
-            return self._grade_record(record)
-
-        results = common.map_with_progress(
-            fn, self.examples, num_threads=self.n_threads, pbar=True
-        )
-        return self._aggregate_and_log(results)
-
-    def _run_generation(self, sampler: SamplerBase) -> EvalResult:
+    def _generate_records(self, sampler: SamplerBase) -> list[dict]:
         def fn(example: dict) -> dict:
             sampler_response = sampler(example["prompt"])
             return _make_generation_record(
@@ -323,9 +321,54 @@ class LiveCodeBenchRubric(Eval):
                 response_usage=sampler_response.response_metadata.get("usage", None),
             )
 
-        records = common.map_with_progress(
+        return common.map_with_progress(
             fn, self.examples, num_threads=self.n_threads, pbar=True
         )
+
+    def _grade_and_aggregate(self, records: list[dict]) -> EvalResult:
+        """Judge every surviving test with ONE flat progress bar over all tests.
+
+        Flattening (vs nesting a per-test map inside a per-problem map) makes the bar
+        reflect individual judge calls — like the faithful eval's per-test view — and
+        keeps total threads at n_threads instead of n_problems x tests_per_problem.
+        """
+        plans = [self._build_plan(r) for r in records]
+        grades: list[list[dict]] = [
+            [None] * len(p["rubric_dicts"]) for p in plans  # type: ignore[list-item]
+        ]
+        tasks = [
+            (pi, ri)
+            for pi, plan in enumerate(plans)
+            for ri in range(len(plan["rubric_dicts"]))
+        ]
+
+        def run_task(t: tuple[int, int]):
+            pi, ri = t
+            plan = plans[pi]
+            grade = self._judge_one(
+                plan["problem_text"], plan["code"], plan["rubric_dicts"][ri]["criterion"]
+            )
+            return pi, ri, grade
+
+        flat = (
+            common.map_with_progress(
+                run_task, tasks, num_threads=self.n_threads, pbar=True
+            )
+            if tasks
+            else []
+        )
+        for pi, ri, grade in flat:
+            grades[pi][ri] = grade
+
+        results = [self._score_record(plans[pi], grades[pi]) for pi in range(len(plans))]
+        return self._aggregate_and_log(results)
+
+    def _run_full(self, sampler: SamplerBase) -> EvalResult:
+        records = self._generate_records(sampler)
+        return self._grade_and_aggregate(records)
+
+    def _run_generation(self, sampler: SamplerBase) -> EvalResult:
+        records = self._generate_records(sampler)
         return EvalResult(
             score=None,
             metrics={},
@@ -341,7 +384,4 @@ class LiveCodeBenchRubric(Eval):
     def _run_evaluation(self) -> EvalResult:
         with open(self.generation_input_path, "r") as f:
             records = [json.loads(line) for line in f]
-        results = common.map_with_progress(
-            self._grade_record, records, num_threads=self.n_threads, pbar=True
-        )
-        return self._aggregate_and_log(results)
+        return self._grade_and_aggregate(records)

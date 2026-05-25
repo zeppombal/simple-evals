@@ -153,10 +153,10 @@ def main():
     parser.add_argument(
         "--lcb-max-test-chars",
         type=int,
-        default=16000,
+        default=4000,
         help="LiveCodeBench rubric evals: skip any unit test whose input+output exceeds "
         "this many chars (the judge can't see it in full). 0 or negative disables the "
-        "skip. Default 16000.",
+        "skip. Default 4000.",
     )
     parser.add_argument(
         "--start-date",
