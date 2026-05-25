@@ -18,12 +18,13 @@ from ifeval import (
     _aggregate_get_clipped_mean,
     calculate_score,
 )
-from ifeval_ar import _parse_ar_results, parse_json_to_dict
+from ifeval_ar import _parse_ar_results
 from livecodebench_common import (
     build_rubric_dicts,
     extract_solution,
     load_examples,
     log_oversized_skip_summary,
+    parse_judge_json,
 )
 from livecodebench_eval import _make_generation_record
 from livecodebench_rubric import _problem_text
@@ -135,7 +136,7 @@ class LiveCodeBenchRubricAR(Eval):
             while tries < n_retries:
                 sampler_response = self.grader_model(messages)
                 parsed = _parse_ar_results(
-                    parse_json_to_dict(sampler_response.response_text),
+                    parse_judge_json(sampler_response.response_text),
                     len(rubric_items),
                 )
                 if parsed is not None:
@@ -285,10 +286,24 @@ class LiveCodeBenchRubricAR(Eval):
             return self._run_full(sampler)
 
     def _aggregate_and_log(self, results: list[SingleEvalResult]) -> EvalResult:
-        log_oversized_skip_summary(
-            [r.example_level_metadata for r in results], self.max_test_chars
+        metas = [r.example_level_metadata for r in results]
+        log_oversized_skip_summary(metas, self.max_test_chars)
+        result = _aggregate_get_clipped_mean(results)
+        if result.metrics is None:
+            result.metrics = {}
+        # Per-test judge "pass" rates (criteria_met), named to match the faithful eval
+        # (EvaluateLiveCodeBenchTrue) so judge vs execution can be compared directly.
+        # micro = pooled over all judged tests; macro = mean of per-instance rates.
+        n_met = sum(
+            1 for m in metas for ri in m.get("rubric_items", []) if ri.get("criteria_met")
         )
-        return _aggregate_get_clipped_mean(results)
+        n_total = sum(len(m.get("rubric_items", [])) for m in metas)
+        macro_rates = [m["score"] for m in metas if m.get("score") is not None]
+        result.metrics["avg_test_pass_micro"] = n_met / n_total if n_total else 0.0
+        result.metrics["avg_test_pass_macro"] = (
+            sum(macro_rates) / len(macro_rates) if macro_rates else 0.0
+        )
+        return result
 
     def _run_full(self, sampler: SamplerBase) -> EvalResult:
         def fn(example: dict) -> SingleEvalResult:

@@ -8,7 +8,9 @@ file adds is uniform plumbing (record shapes, rubric rendering for the LLM-judge
 variants).
 """
 
+import json
 import os
+import re
 import sys
 
 # ---------------------------------------------------------------------------
@@ -289,3 +291,45 @@ def log_oversized_skip_summary(
         "n_tests_dropped_oversized": n_tests_dropped,
         "n_tests_judged": n_tests_judged,
     }
+
+
+_JSON_FENCE_RE = re.compile(r"```(?:json|JSON)?\s*(\{.*\})\s*```", re.DOTALL)
+
+
+def parse_judge_json(text: str) -> dict:
+    """Robustly extract the judge's JSON verdict from a (possibly chatty) response.
+
+    Our judge prompt invites the model to reason, so capable models often emit prose
+    (and/or a ```json fence) around the JSON object. The original IFEval parser only
+    strips a fence at the exact string boundaries, so any leading prose makes
+    `json.loads` fail "at char 0" and the verdict is silently lost. This tries, in
+    order: a ```json/``` fenced object anywhere; the first-`{` .. last-`}` slice
+    (handles nested objects like AR's `{"results":[...]}` plus surrounding prose); the
+    raw string. Returns the first candidate that parses to a dict, else a clean
+    fallback (never raises).
+    """
+    if not text or not text.strip():
+        print("JSON decoding failed: empty response")
+        return {"explanation": "<<PARSING ERROR>>", "criteria_met": False}
+
+    s = text.strip()
+    candidates: list[str] = []
+    fenced = _JSON_FENCE_RE.findall(s)
+    if fenced:
+        candidates.append(fenced[-1])  # last fenced block = the final verdict
+    i, j = s.find("{"), s.rfind("}")
+    if i != -1 and j != -1 and j > i:
+        candidates.append(s[i : j + 1])
+    candidates.append(s)
+
+    for candidate in candidates:
+        try:
+            obj = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+
+    snippet = s[:200].replace("\n", "\\n")
+    print(f"JSON decoding failed: no JSON object found in response: {snippet!r}")
+    return {"explanation": "<<PARSING ERROR>>", "criteria_met": False}
