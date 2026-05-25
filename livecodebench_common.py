@@ -156,19 +156,19 @@ def load_examples(
 # extracted code, and a single test (input + expected output), and decides whether
 # the code would produce the expected output for that input.
 # ---------------------------------------------------------------------------
-_MAX_RENDER_CHARS = 4000  # guard against pathologically large single tests
-
-
-def _truncate(s: str) -> str:
-    if s is not None and len(s) > _MAX_RENDER_CHARS:
-        return s[:_MAX_RENDER_CHARS] + "\n...[truncated]..."
-    return s
+def _test_chars(test: dict) -> int:
+    """Combined input+output size of a test (the dominant judge-prompt contributor)."""
+    return len(test["input"]) + len(test["output"])
 
 
 def render_test_criterion(test: dict, fn_name: str | None) -> str:
-    """Render a single test case as a human-readable, objective rubric criterion."""
-    inp = _truncate(test["input"])
-    out = _truncate(test["output"])
+    """Render a single test case verbatim as a human-readable rubric criterion.
+
+    No truncation: oversized tests are skipped upstream (`build_rubric_dicts`), so
+    everything that reaches here fits the judge prompt in full.
+    """
+    inp = test["input"]
+    out = test["output"]
     if fn_name:
         return (
             f"When `{fn_name}` is called with the following input arguments, it "
@@ -185,35 +185,107 @@ def build_rubric_dicts(
     record: dict,
     max_public_tests: int | None = None,
     max_private_tests: int | None = None,
-) -> list[dict]:
+    max_test_chars: int | None = None,
+) -> tuple[list[dict], dict]:
     """Build rubric-item dicts (one per unit test) from a generation/example record.
 
-    Caps are applied independently to public and private tests (private is the
-    priority slice, matching LCB's reported pass@1). Returns dicts in the
-    `RubricItem` schema so callers can `RubricItem.from_dict`.
+    For each kind (public, private), in original order:
+      1. skip any test whose input+output exceeds `max_test_chars` (None/<=0 ⇒ no
+         skip) — a test the judge can't see in full is not worth judging;
+      2. apply the count cap (`max_*_tests`) to the SURVIVORS.
+
+    Each surviving rubric keeps its original GLOBAL `test_index` (into the
+    public+private concatenation) so it still joins to the faithful eval's
+    `per_test_results[].index`.
+
+    Returns `(rubrics, skip_summary)` where `skip_summary[kind]` =
+    `{n_total, n_oversized_skipped, n_judged}`.
     """
     fn_name = record.get("fn_name", None)
     n_public = len(record.get("public_test_cases", []) or [])
+    size_limited = max_test_chars is not None and max_test_chars > 0
+
     rubrics: list[dict] = []
+    skip_summary: dict = {}
 
     for kind, key, cap, offset in (
         ("public", "public_test_cases", max_public_tests, 0),
         ("private", "private_test_cases", max_private_tests, n_public),
     ):
         tests = record.get(key, []) or []
-        if cap is not None:
-            tests = tests[:cap]
+        survivors: list[tuple[int, dict]] = []  # (global_index, test)
+        n_oversized = 0
         for idx, test in enumerate(tests):
+            if size_limited and _test_chars(test) > max_test_chars:
+                n_oversized += 1
+                continue
+            survivors.append((offset + idx, test))
+        if cap is not None:
+            survivors = survivors[:cap]
+        for global_index, test in survivors:
             rubrics.append(
                 {
                     "criterion": render_test_criterion(test, fn_name),
                     "points": 1,
                     "tags": [kind],
-                    # Global index into the public+private concatenation, matching
-                    # the faithful eval's `per_test_results` ordering so judge vs
-                    # execution can be joined per test.
-                    "test_index": offset + idx,
+                    "test_index": global_index,
                     "kind": kind,
                 }
             )
-    return rubrics
+        skip_summary[kind] = {
+            "n_total": len(tests),
+            "n_oversized_skipped": n_oversized,
+            "n_judged": len(survivors),
+        }
+    return rubrics, skip_summary
+
+
+def log_oversized_skip_summary(
+    example_metadatas: list[dict], max_test_chars: int | None
+) -> dict:
+    """Loudly log how the test-size cap affected this rubric run.
+
+    `example_metadatas` are the per-example dicts produced by the rubric evals (each
+    carries `tests_skipped_oversized` and `fully_skipped`). Returns the aggregate
+    counts so callers can stash them in metadata if desired.
+    """
+    n_problems = len(example_metadatas)
+    n_problems_fully_skipped = sum(1 for m in example_metadatas if m.get("fully_skipped"))
+    n_tests_total = n_tests_dropped = n_tests_judged = 0
+    for m in example_metadatas:
+        for s in (m.get("tests_skipped_oversized") or {}).values():
+            n_tests_total += s.get("n_total", 0)
+            n_tests_dropped += s.get("n_oversized_skipped", 0)
+            n_tests_judged += s.get("n_judged", 0)
+
+    if max_test_chars and max_test_chars > 0:
+        cap_desc = f"{max_test_chars:,} chars (input+output)"
+    else:
+        cap_desc = "DISABLED (no size skipping)"
+    pct = (100 * n_tests_dropped / n_tests_total) if n_tests_total else 0.0
+
+    bar = "=" * 78
+    print(
+        "\n".join(
+            [
+                "",
+                bar,
+                f"  LiveCodeBench rubric eval | test-size cap = {cap_desc}",
+                f"  Tests dropped as oversized: {n_tests_dropped:,} / {n_tests_total:,} "
+                f"({pct:.1f}%)   |   judged: {n_tests_judged:,}",
+                f"  Problems fully skipped (ALL tests oversized -> excluded from score): "
+                f"{n_problems_fully_skipped} / {n_problems}",
+                bar,
+                "",
+            ]
+        ),
+        flush=True,
+    )
+    return {
+        "max_test_chars": max_test_chars,
+        "n_problems": n_problems,
+        "n_problems_fully_skipped": n_problems_fully_skipped,
+        "n_tests_total": n_tests_total,
+        "n_tests_dropped_oversized": n_tests_dropped,
+        "n_tests_judged": n_tests_judged,
+    }

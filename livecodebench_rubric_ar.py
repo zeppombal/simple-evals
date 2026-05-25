@@ -19,7 +19,12 @@ from ifeval import (
     calculate_score,
 )
 from ifeval_ar import _parse_ar_results, parse_json_to_dict
-from livecodebench_common import build_rubric_dicts, extract_solution, load_examples
+from livecodebench_common import (
+    build_rubric_dicts,
+    extract_solution,
+    load_examples,
+    log_oversized_skip_summary,
+)
 from livecodebench_eval import _make_generation_record
 from livecodebench_rubric import _problem_text
 from typess import Eval, EvalResult, MessageList, SamplerBase, SingleEvalResult
@@ -70,6 +75,7 @@ class LiveCodeBenchRubricAR(Eval):
         release_version: str = "release_v6",
         max_public_tests: int | None = None,
         max_private_tests: int | None = None,
+        max_test_chars: int | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
         mode: Literal["full", "generate", "evaluate"] = "full",
@@ -81,6 +87,7 @@ class LiveCodeBenchRubricAR(Eval):
         self.generation_input_path = generation_input_path
         self.max_public_tests = max_public_tests
         self.max_private_tests = max_private_tests
+        self.max_test_chars = max_test_chars
 
         if mode == "evaluate":
             assert (
@@ -186,11 +193,49 @@ class LiveCodeBenchRubricAR(Eval):
     def _grade_record(self, record: dict) -> SingleEvalResult:
         problem_text = _problem_text(record["prompt"])
         code = extract_solution(record["response_text"])
-        rubric_dicts = build_rubric_dicts(
+        rubric_dicts, skip_summary = build_rubric_dicts(
             record,
             max_public_tests=self.max_public_tests,
             max_private_tests=self.max_private_tests,
+            max_test_chars=self.max_test_chars,
         )
+        actual_msgs = record["actual_queried_message_list"]
+        completion = [dict(content=record["response_text"], role="assistant")]
+        convo = actual_msgs + completion
+
+        # All tests oversized → nothing judgeable; exclude from the aggregate.
+        if not rubric_dicts:
+            html = common.jinja_env.from_string(
+                HEALTHBENCH_HTML_JINJA.replace(
+                    "{{ rubric_grades }}",
+                    "All test cases skipped (exceeded max_test_chars).",
+                )
+            ).render(
+                prompt_messages=actual_msgs,
+                next_message=dict(content=record["response_text"], role="assistant"),
+                score=0.0,
+                extracted_answer=code,
+            )
+            return SingleEvalResult(
+                html=html,
+                score=None,
+                convo=convo,
+                metrics={},
+                example_level_metadata={
+                    "score": None,
+                    "fully_skipped": True,
+                    "tests_skipped_oversized": skip_summary,
+                    "usage": record["response_metadata"]["usage"],
+                    "extracted_code": code,
+                    "rubric_items": [],
+                    "prompt": actual_msgs,
+                    "completion": completion,
+                    "prompt_id": record["prompt_id"],
+                    "question_id": record["question_id"],
+                    "completion_id": record["completion_id"],
+                },
+            )
+
         metrics, readable_explanation_str, rubric_items_with_grades = self.grade_sample(
             problem_text=problem_text,
             code=code,
@@ -198,7 +243,6 @@ class LiveCodeBenchRubricAR(Eval):
             example_tags=record["example_tags"],
         )
         score = metrics["overall_score"]
-        actual_msgs = record["actual_queried_message_list"]
         html = common.jinja_env.from_string(
             HEALTHBENCH_HTML_JINJA.replace(
                 "{{ rubric_grades }}", readable_explanation_str.replace("\n", "<br>")
@@ -209,7 +253,6 @@ class LiveCodeBenchRubricAR(Eval):
             score=score,
             extracted_answer=code,
         )
-        convo = actual_msgs + [dict(content=record["response_text"], role="assistant")]
         return SingleEvalResult(
             html=html,
             score=score,
@@ -217,11 +260,13 @@ class LiveCodeBenchRubricAR(Eval):
             metrics=metrics,
             example_level_metadata={
                 "score": score,
+                "fully_skipped": False,
+                "tests_skipped_oversized": skip_summary,
                 "usage": record["response_metadata"]["usage"],
                 "extracted_code": code,
                 "rubric_items": rubric_items_with_grades,
                 "prompt": actual_msgs,
-                "completion": [dict(content=record["response_text"], role="assistant")],
+                "completion": completion,
                 "prompt_id": record["prompt_id"],
                 "question_id": record["question_id"],
                 "completion_id": record["completion_id"],
@@ -239,6 +284,12 @@ class LiveCodeBenchRubricAR(Eval):
         else:  # "full"
             return self._run_full(sampler)
 
+    def _aggregate_and_log(self, results: list[SingleEvalResult]) -> EvalResult:
+        log_oversized_skip_summary(
+            [r.example_level_metadata for r in results], self.max_test_chars
+        )
+        return _aggregate_get_clipped_mean(results)
+
     def _run_full(self, sampler: SamplerBase) -> EvalResult:
         def fn(example: dict) -> SingleEvalResult:
             sampler_response = sampler(example["prompt"])
@@ -253,7 +304,7 @@ class LiveCodeBenchRubricAR(Eval):
         results = common.map_with_progress(
             fn, self.examples, num_threads=self.n_threads, pbar=True
         )
-        return _aggregate_get_clipped_mean(results)
+        return self._aggregate_and_log(results)
 
     def _run_generation(self, sampler: SamplerBase) -> EvalResult:
         def fn(example: dict) -> dict:
@@ -286,4 +337,4 @@ class LiveCodeBenchRubricAR(Eval):
         results = common.map_with_progress(
             self._grade_record, records, num_threads=self.n_threads, pbar=True
         )
-        return _aggregate_get_clipped_mean(results)
+        return self._aggregate_and_log(results)

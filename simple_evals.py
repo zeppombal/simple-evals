@@ -151,6 +151,14 @@ def main():
         help="Cap on private test cases turned into rubric items (LiveCodeBench rubric evals).",
     )
     parser.add_argument(
+        "--lcb-max-test-chars",
+        type=int,
+        default=16000,
+        help="LiveCodeBench rubric evals: skip any unit test whose input+output exceeds "
+        "this many chars (the judge can't see it in full). 0 or negative disables the "
+        "skip. Default 16000.",
+    )
+    parser.add_argument(
         "--start-date",
         type=str,
         default=None,
@@ -543,6 +551,7 @@ def main():
                     end_date=args.end_date or None,
                     max_public_tests=args.max_public_tests,
                     max_private_tests=args.max_private_tests,
+                    max_test_chars=args.lcb_max_test_chars,
                     mode=args.mode,
                     generation_input_path=args.generation_input,
                 )
@@ -557,6 +566,7 @@ def main():
                     end_date=args.end_date or None,
                     max_public_tests=args.max_public_tests,
                     max_private_tests=args.max_private_tests,
+                    max_test_chars=args.lcb_max_test_chars,
                     mode=args.mode,
                     generation_input_path=args.generation_input,
                 )
